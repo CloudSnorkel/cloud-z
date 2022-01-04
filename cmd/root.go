@@ -47,6 +47,7 @@ var rootCmd = &cobra.Command{
 		}
 
 		printTable(providers.GetCPUInfo())
+		printTable(providers.GetMemoryInfo())
 	},
 }
 

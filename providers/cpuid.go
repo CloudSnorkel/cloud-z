@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func bytes(b int) string {
+func int2bytes(b int) string {
 	//return bytesize.New(float64(b)).Format("%d", "", false)
 	return bytesize.New(float64(b)).String()
 }
@@ -23,10 +23,10 @@ func GetCPUInfo() [][]string {
 		{"Physical cores", fmt.Sprintf("%v", cpuid.CPU.PhysicalCores)},
 		{"Thread per core", fmt.Sprintf("%v", cpuid.CPU.ThreadsPerCore)},
 		{"Boost frequency", fmt.Sprintf("%v", cpuid.CPU.BoostFreq)},
-		{"L1 Cache", fmt.Sprintf("%v instruction, %v data", bytes(cpuid.CPU.Cache.L1I), bytes(cpuid.CPU.Cache.L1D))},
-		{"L2 Cache", bytes(cpuid.CPU.Cache.L2)},
-		{"L2 Cache", bytes(cpuid.CPU.Cache.L2)},
-		{"L3 Cache", bytes(cpuid.CPU.Cache.L3)},
+		{"L1 Cache", fmt.Sprintf("%v instruction, %v data", int2bytes(cpuid.CPU.Cache.L1I), int2bytes(cpuid.CPU.Cache.L1D))},
+		{"L2 Cache", int2bytes(cpuid.CPU.Cache.L2)},
+		{"L2 Cache", int2bytes(cpuid.CPU.Cache.L2)},
+		{"L3 Cache", int2bytes(cpuid.CPU.Cache.L3)},
 		{"Cache line", fmt.Sprintf("%v", cpuid.CPU.CacheLine)},
 		{"Features", strings.Join(cpuid.CPU.FeatureSet(), ", ")},
 	}
