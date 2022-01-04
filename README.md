@@ -3,7 +3,8 @@
 Cloud-Z gathers information and perform benchmarks on cloud instances in multiple cloud providers.
 
 - [x] Cloud type, instance id, and type
-- [ ] CPU information including type, number of available cores, and cache sizes
+- [x] CPU information including type, number of available cores, and cache sizes
+- [ ] RAM information
 - [ ] Benchmark CPU
 - [ ] Storage devices information
 - [ ] Benchmark storage

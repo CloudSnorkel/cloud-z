@@ -1,6 +1,6 @@
 package providers
 
-type Provider interface {
+type CloudProvider interface {
 	Detect() bool
 	GetData() ([][]string, error)
 }
