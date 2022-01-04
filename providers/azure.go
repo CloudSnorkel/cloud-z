@@ -2,7 +2,6 @@ package providers
 
 import (
 	"cloud-z/metadata"
-	"log"
 	"strings"
 )
 
@@ -13,7 +12,7 @@ func (provider *AzureProvider) Detect() bool {
 	server, err := metadata.GetMetadataHeader("Server")
 
 	if err != nil {
-		log.Println(err)
+		return false
 	}
 
 	return strings.HasPrefix(server, "Microsoft-IIS")

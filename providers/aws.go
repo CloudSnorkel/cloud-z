@@ -3,7 +3,6 @@ package providers
 import (
 	"cloud-z/metadata"
 	"errors"
-	"log"
 )
 
 type AwsProvider struct {
@@ -15,7 +14,7 @@ func (provider *AwsProvider) Detect() bool {
 	server, err := metadata.GetMetadataHeader("Server")
 
 	if err != nil {
-		log.Println(err)
+		return false
 	}
 
 	return server == "EC2ws"

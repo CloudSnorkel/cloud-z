@@ -2,7 +2,6 @@ package providers
 
 import (
 	"cloud-z/metadata"
-	"log"
 )
 
 type GcpProvider struct {
@@ -12,7 +11,7 @@ func (provider *GcpProvider) Detect() bool {
 	flavor, err := metadata.GetMetadataHeader("Metadata-Flavor")
 
 	if err != nil {
-		log.Println(err)
+		return false
 	}
 
 	return flavor == "Google"
