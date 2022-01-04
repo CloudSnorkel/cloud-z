@@ -32,7 +32,7 @@ Cloud-Z gathers information and perform benchmarks on cloud instances in multipl
 
 Cloud-Z is provided as a single binary that can be downloaded from the [releases page](https://github.com/CloudSnorkel/cloud-z/releases).
 
-```bash
+```
 $ ./cloud-z
 +---------------+-----------------------+
 | Cloud         | AWS                   |
