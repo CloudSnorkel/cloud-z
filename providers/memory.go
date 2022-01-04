@@ -136,7 +136,7 @@ func GetMemoryInfo() [][]string {
 	// Find SMBIOS data in operating system-specific location.
 	rc, _, err := smbios.Stream()
 	if err != nil {
-		log.Printf("Failed to open SMBIOS stream: %v\n", err)
+		log.Printf("Failed to open SMBIOS stream, try sudo: %v\n", err)
 		return result
 	}
 	// Be sure to close the stream!
