@@ -5,7 +5,8 @@ Cloud-Z gathers information and perform benchmarks on cloud instances in multipl
 - [x] Cloud type, instance id, and type
 - [x] CPU information including type, number of available cores, and cache sizes
 - [x] RAM information
-- [ ] Benchmark CPU
+- [x] Benchmark CPU
+- [ ] Optionally contribute data to central DB
 - [ ] Storage devices information
 - [ ] Benchmark storage
 - [ ] Network devices information
@@ -33,7 +34,7 @@ Cloud-Z gathers information and perform benchmarks on cloud instances in multipl
 Cloud-Z is provided as a single binary that can be downloaded from the [releases page](https://github.com/CloudSnorkel/cloud-z/releases).
 
 ```
-$ ./cloud-z
+$ sudo ./cloud-z
 +---------------+-----------------------+
 | Cloud         | AWS                   |
 | AMI           | ami-0712c70d31ba14f8a |
@@ -74,4 +75,8 @@ $ ./cloud-z
 | Stick #1: total width | 64-bit   |
 | Stick #1: speed       | 0 MHz    |
 +-----------------------+----------+
++--------+--------------------------------+
+| fbench | 1.6572109 seconds (lower is    |
+|        | better)                        |
++--------+--------------------------------+
 ```

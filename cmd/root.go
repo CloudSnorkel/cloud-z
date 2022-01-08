@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"cloud-z/benchmarks"
 	"cloud-z/providers"
 	"fmt"
 	"github.com/olekukonko/tablewriter"
@@ -48,6 +49,7 @@ var rootCmd = &cobra.Command{
 
 		printTable(providers.GetCPUInfo())
 		printTable(providers.GetMemoryInfo())
+		printTable(benchmarks.AllBenchmarks())
 	},
 }
 
