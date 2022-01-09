@@ -6,26 +6,17 @@ Cloud-Z gathers information and perform benchmarks on cloud instances in multipl
 - [x] CPU information including type, number of available cores, and cache sizes
 - [x] RAM information
 - [x] Benchmark CPU
-- [ ] Optionally contribute data to central DB
+- [x] Optionally contribute data to central DB
 - [ ] Storage devices information
 - [ ] Benchmark storage
 - [ ] Network devices information
 - [ ] Benchmark network
 
-### Supported clouds:
+### Supported Clouds
 
 * Amazon Web Services (AWS)
 * Google Cloud Platform (GCP)
 * Microsoft Azure
-
-### Supported platforms:
-
-* Windows
-  * x86_64
-  * arm64
-* Linux
-  * x86_64
-  * arm64
 
 [![CI](https://github.com/CloudSnorkel/cloud-z/actions/workflows/goreleaser.yml/badge.svg)](https://github.com/CloudSnorkel/cloud-z/actions/workflows/goreleaser.yml)
 
@@ -33,13 +24,22 @@ Cloud-Z gathers information and perform benchmarks on cloud instances in multipl
 
 Cloud-Z is provided as a single binary that can be downloaded from the [releases page](https://github.com/CloudSnorkel/cloud-z/releases).
 
+### Download Links
+
+* [Linux x64](https://z.cloudsnorkel.com/cloud-z/download/linux/x64)
+* [Linux arm64 (Graviton)](https://z.cloudsnorkel.com/cloud-z/download/linux/arm64)
+* [Windows x64](https://z.cloudsnorkel.com/cloud-z/download/windows/x64)
+* [Windows arm64 (Graviton)](https://z.cloudsnorkel.com/cloud-z/download/windows/arm64)
+
 ```
+$ curl -sLo cloud-z.tar.gz https://z.cloudsnorkel.com/cloud-z/download/linux/x64
+$ tar xzf cloud-z.tar.gz
 $ sudo ./cloud-z
 +---------------+-----------------------+
 | Cloud         | AWS                   |
 | AMI           | ami-0712c70d31ba14f8a |
 | Instance ID   | i-12345678900112344   |
-| Instance type | t4g.nano              |
+| Instance type | t4.nano               |
 +---------------+-----------------------+
 +-----------------+--------------------------------+
 | CPU             | Intel(R) Xeon(R) CPU @ 2.20GHz |

@@ -2,6 +2,8 @@ package providers
 
 import (
 	"cloud-z/metadata"
+	"cloud-z/reporting"
+	"fmt"
 	"strings"
 )
 
@@ -22,23 +24,25 @@ func (provider *AzureProvider) getMetadata(url string) (string, error) {
 	return metadata.GetMetadataText(url, "Metadata", "true")
 }
 
-func (provider *AzureProvider) GetData() ([][]string, error) {
+func (provider *AzureProvider) GetData(report *reporting.Report) {
+	report.Cloud = "Azure"
+
 	var attributes [][]string
 	attributes = append(attributes, []string{"Cloud", "Azure"})
 
 	// https://docs.microsoft.com/en-us/azure/virtual-machines/windows/instance-metadata-service?tabs=linux#instance-metadata
-	urls := [][]string{
-		{"Instance id", "/metadata/instance/compute/vmId?api-version=2017-08-01&format=text"},
-		{"Instance type", "/metadata/instance/compute/vmSize?api-version=2017-08-01&format=text"},
-		{"Zone", "/metadata/instance/compute/zone?api-version=2017-08-01&format=text"},
-	}
-	for _, url := range urls {
-		data, err := provider.getMetadata(url[1])
-		if err != nil {
-			return [][]string{}, err
-		}
-		attributes = append(attributes, []string{url[0], data})
+	urls := map[*string]string{
+		&report.InstanceId:       "/metadata/instance/compute/vmId?api-version=2017-08-01&format=text",
+		&report.InstanceType:     "/metadata/instance/compute/vmSize?api-version=2017-08-01&format=text",
+		&report.AvailabilityZone: "/metadata/instance/compute/zone?api-version=2017-08-01&format=text",
 	}
 
-	return attributes, nil
+	for target, url := range urls {
+		data, err := provider.getMetadata(url)
+		if err != nil {
+			report.AddError(fmt.Sprintf("Failed to download: %v", url))
+			continue
+		}
+		*target = data
+	}
 }

@@ -2,12 +2,12 @@ package providers
 
 import (
 	"bytes"
+	"cloud-z/reporting"
 	"encoding/binary"
 	"fmt"
 	"github.com/cloudfoundry/gosigar"
 	"github.com/digitalocean/go-smbios/smbios"
 	"io"
-	"log"
 )
 
 // https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.1.1.pdf
@@ -126,18 +126,19 @@ func readString(reader io.Reader, strings []string) string {
 	return ""
 }
 
-func GetMemoryInfo() [][]string {
+func GetMemoryInfo(report *reporting.Report) {
 	mem := sigar.Mem{}
-	mem.Get()
-	result := [][]string{
-		{"Total RAM", sigar.FormatSize(mem.Total) + "B"},
+	if err := mem.Get(); err != nil {
+		report.AddError(fmt.Sprintf("Unable to get total RAM: %v", err))
 	}
+
+	report.Memory.Total = mem.Total
 
 	// Find SMBIOS data in operating system-specific location.
 	rc, _, err := smbios.Stream()
 	if err != nil {
-		log.Printf("Failed to open SMBIOS stream, try sudo: %v\n", err)
-		return result
+		report.AddError(fmt.Sprintf("Failed to open SMBIOS stream, try sudo: %v\n", err))
+		return
 	}
 	// Be sure to close the stream!
 	defer rc.Close()
@@ -146,28 +147,23 @@ func GetMemoryInfo() [][]string {
 	d := smbios.NewDecoder(rc)
 	records, err := d.Decode()
 	if err != nil {
-		log.Printf("Failed to decode SMBIOS structures: %v\n", err)
-		return result
+		report.AddError(fmt.Sprintf("Failed to decode SMBIOS structures: %v\n", err))
+		return
 	}
 
-	i := 1
 	for _, record := range records {
 		if record.Header.Type == 17 {
 			memDevice := readMemoryDevice(record)
-			prefix := fmt.Sprintf("Stick #%v: ", i)
-
-			result = append(result, []string{prefix + "location", memDevice.Location})
-			result = append(result, []string{prefix + "type", memDevice.memoryType() + " " + memDevice.formFactor()})
-			result = append(result, []string{prefix + "size", memDevice.size()})
-			result = append(result, []string{prefix + "data width", fmt.Sprintf("%v-bit", memDevice.DataWidth)})
-			result = append(result, []string{prefix + "total width", fmt.Sprintf("%v-bit", memDevice.TotalWidth)})
-			result = append(result, []string{prefix + "speed", fmt.Sprintf("%v MHz", memDevice.Speed)})
-
-			i += 1
+			report.Memory.Sticks = append(report.Memory.Sticks, reporting.MemoryStickReport{
+				Location:   memDevice.Location,
+				Type:       memDevice.memoryType() + " " + memDevice.formFactor(),
+				Size:       memDevice.Size,
+				DataWidth:  memDevice.DataWidth,
+				TotalWidth: memDevice.TotalWidth,
+				MHz:        memDevice.Speed,
+			})
 		}
 	}
-
-	return result
 }
 
 func readMemoryDevice(record *smbios.Structure) MemoryDevice {

@@ -11,7 +11,7 @@ builds:
     goarch:
       - amd64
       - arm64
-    ldflags: -s -w -X cloud-z/cmd.version={{.Version}} -X cloud-z/cmd.commit={{.Commit}} -X cloud-z/cmd.date={{.Date}} -X cloud-z/cmd.builtBy=goreleaser
+    ldflags: -s -w -X cloud-z/cmd.version={{.Version}} -X cloud-z/cmd.commit={{.Commit}} -X cloud-z/cmd.date={{.Date}} -X cloud-z/cmd.builtBy=goreleaser -X cloud-z/reporting.apiKey={{ if index .Env "API_KEY"  }}{{ .Env.API_KEY }}{{ else }}no-env{{ end }}
 archives:
   - replacements:
       linux: Linux

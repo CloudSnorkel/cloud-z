@@ -1,10 +1,16 @@
 package benchmarks
 
-import "fmt"
+import (
+	"cloud-z/reporting"
+)
 
-func AllBenchmarks() [][]string {
-	return [][]string{
-		// TODO single and multi thread
-		{"fbench", fmt.Sprintf("%v seconds (lower is better)", fbench())},
+func AllBenchmarks(report *reporting.Report) {
+	// TODO single and multi thread
+	report.Benchmarks = map[string]reporting.BenchmarkReport{
+		"fbench": {
+			Version: 1,
+			Result:  fbench(),
+			Unit:    reporting.Seconds,
+		},
 	}
 }

@@ -3,10 +3,10 @@ package cmd
 import (
 	"cloud-z/benchmarks"
 	"cloud-z/providers"
+	"cloud-z/reporting"
 	"fmt"
-	"github.com/olekukonko/tablewriter"
+	"github.com/AlecAivazis/survey/v2"
 	"github.com/spf13/cobra"
-	"log"
 	"os"
 )
 
@@ -22,6 +22,8 @@ var rootCmd = &cobra.Command{
 	Short:   "Cloud-Z gathers information on cloud instances",
 	Version: fmt.Sprintf("%s, commit %s, built at %s by %s", version, commit, date, builtBy),
 	Run: func(cmd *cobra.Command, args []string) {
+		report := &reporting.Report{}
+
 		allCloudProviders := []providers.CloudProvider{
 			&providers.AwsProvider{},
 			&providers.GcpProvider{},
@@ -32,33 +34,29 @@ var rootCmd = &cobra.Command{
 		for _, provider := range allCloudProviders {
 			// TODO detect faster with goroutines?
 			if provider.Detect() {
-				data, err := provider.GetData()
-				if err != nil {
-					log.Fatalln(err)
-				}
-
-				printTable(data)
-
+				provider.GetData(report)
 				detectedCloud = true
 			}
 		}
 
 		if !detectedCloud {
-			println("Unable to detect cloud provider")
+			report.AddError("Unable to detect cloud provider")
 		}
 
-		printTable(providers.GetCPUInfo())
-		printTable(providers.GetMemoryInfo())
-		printTable(benchmarks.AllBenchmarks())
-	},
-}
+		providers.GetCPUInfo(report)
+		providers.GetMemoryInfo(report)
+		benchmarks.AllBenchmarks(report)
 
-func printTable(data [][]string) {
-	table := tablewriter.NewWriter(os.Stdout)
-	for _, v := range data {
-		table.Append(v)
-	}
-	table.Render()
+		report.Print()
+
+		submit := false
+		// TODO three options - yes, no, show json
+		survey.AskOne(&survey.Confirm{Message: "Would you like to anonymously contribute this data to https://z.cloudsnorkel.com/? Your IP address may be logged, but instance id and other PII will not be sent."}, &submit)
+		if submit {
+			//report.PrintJson()
+			report.Send()
+		}
+	},
 }
 
 func Execute() {

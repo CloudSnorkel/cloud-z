@@ -1,6 +1,8 @@
 package providers
 
+import "cloud-z/reporting"
+
 type CloudProvider interface {
 	Detect() bool
-	GetData() ([][]string, error)
+	GetData(*reporting.Report)
 }

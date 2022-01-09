@@ -1,33 +1,24 @@
 package providers
 
 import (
-	"fmt"
-	"github.com/inhies/go-bytesize"
+	"cloud-z/reporting"
 	"github.com/klauspost/cpuid/v2"
-	"strings"
 )
 
-func int2bytes(b int) string {
-	//return bytesize.New(float64(b)).Format("%d", "", false)
-	return bytesize.New(float64(b)).String()
-}
-
-func GetCPUInfo() [][]string {
-	return [][]string{
-		{"CPU", cpuid.CPU.BrandName},
-		{"Vendor", cpuid.CPU.VendorString},
-		{"Vendor ID", fmt.Sprintf("%v", cpuid.CPU.VendorID.String())},
-		{"Family", fmt.Sprintf("%v", cpuid.CPU.Family)},
-		{"MHz", fmt.Sprintf("%v", cpuid.CPU.Hz/1_000_000)},
-		{"Logical cores", fmt.Sprintf("%v", cpuid.CPU.LogicalCores)},
-		{"Physical cores", fmt.Sprintf("%v", cpuid.CPU.PhysicalCores)},
-		{"Thread per core", fmt.Sprintf("%v", cpuid.CPU.ThreadsPerCore)},
-		{"Boost frequency", fmt.Sprintf("%v", cpuid.CPU.BoostFreq)},
-		{"L1 Cache", fmt.Sprintf("%v instruction, %v data", int2bytes(cpuid.CPU.Cache.L1I), int2bytes(cpuid.CPU.Cache.L1D))},
-		{"L2 Cache", int2bytes(cpuid.CPU.Cache.L2)},
-		{"L2 Cache", int2bytes(cpuid.CPU.Cache.L2)},
-		{"L3 Cache", int2bytes(cpuid.CPU.Cache.L3)},
-		{"Cache line", fmt.Sprintf("%v", cpuid.CPU.CacheLine)},
-		{"Features", strings.Join(cpuid.CPU.FeatureSet(), ", ")},
-	}
+func GetCPUInfo(report *reporting.Report) {
+	report.CPU.Description = cpuid.CPU.BrandName
+	report.CPU.Vendor = cpuid.CPU.VendorString
+	report.CPU.VendorId = cpuid.CPU.VendorID.String()
+	report.CPU.Family = cpuid.CPU.Family
+	report.CPU.MHz = int(cpuid.CPU.Hz / 1_000_000)
+	report.CPU.LogicalCores = cpuid.CPU.LogicalCores
+	report.CPU.PhysicalCores = cpuid.CPU.PhysicalCores
+	report.CPU.ThreadsPerCore = cpuid.CPU.ThreadsPerCore
+	report.CPU.BoostFrequency = int(cpuid.CPU.BoostFreq)
+	report.CPU.CacheL1Instruction = cpuid.CPU.Cache.L1I
+	report.CPU.CacheL1Data = cpuid.CPU.Cache.L1D
+	report.CPU.CacheL2 = cpuid.CPU.Cache.L2
+	report.CPU.CacheL3 = cpuid.CPU.Cache.L3
+	report.CPU.CacheLine = cpuid.CPU.CacheLine
+	report.CPU.Features = cpuid.CPU.FeatureSet()
 }
