@@ -18,7 +18,8 @@ Cloud-Z gathers information and perform benchmarks on cloud instances in multipl
 * Google Cloud Platform (GCP)
 * Microsoft Azure
 
-[![CI](https://github.com/CloudSnorkel/cloud-z/actions/workflows/goreleaser.yml/badge.svg)](https://github.com/CloudSnorkel/cloud-z/actions/workflows/goreleaser.yml)
+[![CI](https://github.com/CloudSnorkel/cloud-z/actions/workflows/goreleaser.yml/badge.svg)](https://github.com/CloudSnorkel/cloud-z/actions/workflows/goreleaser.yml) [![GitHub go.mod Go version of a Go module](https://img.shields.io/github/go-mod/go-version/CloudSnorkel/cloud-z.svg)](https://github.com/CloudSnorkel/cloud-z)
+ [![GoReportCard](https://goreportcard.com/badge/github.com/CloudSnorkel/cloud-z)](https://goreportcard.com/report/github.com/CloudSnorkel/cloud-z) [![GitHub license](https://img.shields.io/github/license/CloudSnorkel/cloud-z.svg)](https://github.com/CloudSnorkel/cloud-z/blob/master/LICENSE) [![GitHub release](https://img.shields.io/github/release/CloudSnorkel/cloud-z.svg)](https://GitHub.com/CloudSnorkel/cloud-z/releases/)
 
 ## Usage
 
@@ -30,6 +31,8 @@ Cloud-Z is provided as a single binary that can be downloaded from the [releases
 * [Linux arm64 (Graviton)](https://z.cloudsnorkel.com/cloud-z/download/linux/arm64)
 * [Windows x64](https://z.cloudsnorkel.com/cloud-z/download/windows/x64)
 * [Windows arm64 (Graviton)](https://z.cloudsnorkel.com/cloud-z/download/windows/arm64)
+
+### Example
 
 ```
 $ curl -sLo cloud-z.tar.gz https://z.cloudsnorkel.com/cloud-z/download/linux/x64
