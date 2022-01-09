@@ -1,9 +1,9 @@
 package reporting
 
 import (
-	"encoding/json"
 	"fmt"
 	sigar "github.com/cloudfoundry/gosigar"
+	"github.com/hokaccha/go-prettyjson"
 	"github.com/inhies/go-bytesize"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -88,7 +88,7 @@ func (report *Report) printErrors() {
 		return
 	}
 
-	fmt.Println(text.Bold.Sprint("Errors:"))
+	fmt.Println(text.Bold.Sprint("\nErrors:"))
 
 	for _, err := range report.Errors {
 		fmt.Println(text.FgRed.Sprintf("  %v", err))
@@ -96,7 +96,6 @@ func (report *Report) printErrors() {
 }
 
 func (report *Report) PrintJson() {
-	// TODO colors?
-	result, _ := json.MarshalIndent(report, "", "  ")
-	fmt.Print(string(result))
+	result, _ := prettyjson.Marshal(report)
+	fmt.Println(string(result))
 }

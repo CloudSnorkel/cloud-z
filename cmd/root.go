@@ -5,7 +5,6 @@ import (
 	"cloud-z/providers"
 	"cloud-z/reporting"
 	"fmt"
-	"github.com/AlecAivazis/survey/v2"
 	"github.com/spf13/cobra"
 	"os"
 )
@@ -49,11 +48,14 @@ var rootCmd = &cobra.Command{
 
 		report.Print()
 
-		submit := false
-		// TODO three options - yes, no, show json
-		survey.AskOne(&survey.Confirm{Message: "Would you like to anonymously contribute this data to https://z.cloudsnorkel.com/? Your IP address may be logged, but instance id and other PII will not be sent."}, &submit)
-		if submit {
-			//report.PrintJson()
+		fmt.Println()
+
+		submitOrViewOrNo := ask("Would you like to anonymously contribute this data to https://z.cloudsnorkel.com/? Your IP address may be logged, but instance id and other PII will not be sent.", map[rune]string{'y': "yes", 'n': "no", 'v': "view JSON"}, 'n')
+		if submitOrViewOrNo == 'v' {
+			report.PrintJson()
+			submitOrViewOrNo = ask("Ok to submit?", map[rune]string{'y': "yes", 'n': "no"}, 'n')
+		}
+		if submitOrViewOrNo == 'y' {
 			report.Send()
 		}
 	},

@@ -11,8 +11,11 @@ var apiKey = "not-set"
 
 func (report *Report) Send() {
 	if apiKey == "not-set" {
+		fmt.Println("No API key set. Skipping report.")
 		return
 	}
+
+	fmt.Println("Sending report...")
 
 	reportJson, err := json.Marshal(report)
 	if err != nil {
