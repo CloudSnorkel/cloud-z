@@ -1,6 +1,6 @@
 # Cloud-Z
 
-Cloud-Z gathers information and perform benchmarks on cloud instances in multiple cloud providers.
+Cloud-Z gathers performance related information and benchmarks on cloud instances with support for multiple cloud providers.
 
 - [x] Cloud type, instance id, and type
 - [x] CPU information including type, number of available cores, and cache sizes
@@ -83,3 +83,11 @@ $ sudo ./cloud-z
 |        | better)                        |
 +--------+--------------------------------+
 ```
+
+## How to Help
+
+* Run Cloud-Z on your instances and contribute reports
+* Implement a new [cloud provider](providers/provider.go)
+* Spread the word
+
+[![Stargazers repo roster for @CloudSnorkel/cloud-z](https://reporoster.com/stars/CloudSnorkel/cloud-z)](https://github.com/CloudSnorkel/cloud-z/stargazers)
