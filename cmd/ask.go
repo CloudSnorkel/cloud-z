@@ -24,7 +24,7 @@ func ask(question string, options map[rune]string, defaultOption rune) rune {
 
 	for {
 		char, key, err := keyboard.GetSingleKey()
-		if err != nil || key == keyboard.KeyEnter {
+		if err != nil || key == keyboard.KeyEnter || key == keyboard.KeyCtrlC {
 			return defaultOption
 		}
 
