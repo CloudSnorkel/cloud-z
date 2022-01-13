@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"encoding/json"
 	"fmt"
 	sigar "github.com/cloudfoundry/gosigar"
 	"github.com/hokaccha/go-prettyjson"
@@ -17,7 +18,7 @@ func int2bytes(b int) string {
 	return bytesize.New(float64(b)).String()
 }
 
-func (report *Report) Print() {
+func (report *Report) Print(noColor bool) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetAllowedRowLength(120)
@@ -28,15 +29,17 @@ func (report *Report) Print() {
 	t.AppendRow(table.Row{"Availability zone", report.AvailabilityZone})
 	t.AppendRow(table.Row{"Instance id", report.InstanceId})
 	t.AppendRow(table.Row{"Image id", report.ImageId})
-	t.SetStyle(table.StyleColoredMagentaWhiteOnBlack)
+	if !noColor {
+		t.SetStyle(table.StyleColoredMagentaWhiteOnBlack)
+	}
 	t.Render()
 
-	report.printCPU()
-	report.printMemory()
-	report.printErrors()
+	report.printCPU(noColor)
+	report.printMemory(noColor)
+	report.printErrors(noColor)
 }
 
-func (report *Report) printCPU() {
+func (report *Report) printCPU(noColor bool) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetAllowedRowLength(120)
@@ -56,11 +59,13 @@ func (report *Report) printCPU() {
 	t.AppendRow(table.Row{"L3 Cache", int2bytes(cpuid.CPU.Cache.L3)})
 	t.AppendRow(table.Row{"Cache line", fmt.Sprintf("%v", cpuid.CPU.CacheLine)})
 	t.AppendRow(table.Row{"Features", text.WrapSoft(strings.Join(cpuid.CPU.FeatureSet(), ", "), 80)})
-	t.SetStyle(table.StyleColoredMagentaWhiteOnBlack)
+	if !noColor {
+		t.SetStyle(table.StyleColoredMagentaWhiteOnBlack)
+	}
 	t.Render()
 }
 
-func (report *Report) printMemory() {
+func (report *Report) printMemory(noColor bool) {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 	t.SetAllowedRowLength(120)
@@ -79,23 +84,38 @@ func (report *Report) printMemory() {
 		t.AppendRow(table.Row{stickCol, "Total width", fmt.Sprintf("%v-bit", stick.TotalWidth)}, rowConfigAutoMerge)
 		t.AppendRow(table.Row{stickCol, "Speed", fmt.Sprintf("%v MHz", stick.MHz)}, rowConfigAutoMerge)
 	}
-	t.SetStyle(table.StyleColoredMagentaWhiteOnBlack)
+	if !noColor {
+		t.SetStyle(table.StyleColoredMagentaWhiteOnBlack)
+	}
 	t.Render()
 }
 
-func (report *Report) printErrors() {
+func (report *Report) printErrors(noColor bool) {
 	if len(report.Errors) == 0 {
 		return
 	}
 
-	fmt.Println(text.Bold.Sprint("\nErrors:"))
+	if !noColor {
+		fmt.Println(text.Bold.Sprint("\nErrors:"))
+	} else {
+		fmt.Println("\nErrors:")
+	}
 
 	for _, err := range report.Errors {
-		fmt.Println(text.FgRed.Sprintf("  %v", err))
+		if !noColor {
+			fmt.Println(text.FgRed.Sprintf("  %v", err))
+		} else {
+			fmt.Printf("  %v\n", err)
+		}
 	}
 }
 
-func (report *Report) PrintJson() {
-	result, _ := prettyjson.Marshal(report)
+func (report *Report) PrintJson(noColor bool) {
+	var result []byte
+	if !noColor {
+		result, _ = prettyjson.Marshal(report)
+	} else {
+		result, _ = json.Marshal(report)
+	}
 	fmt.Println(string(result))
 }

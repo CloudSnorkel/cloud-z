@@ -16,6 +16,8 @@ var (
 	builtBy = "unknown"
 )
 
+var noColor bool = false
+
 var rootCmd = &cobra.Command{
 	Use:     "cloud-z",
 	Short:   "Cloud-Z gathers information on cloud instances",
@@ -46,13 +48,22 @@ var rootCmd = &cobra.Command{
 		providers.GetMemoryInfo(report)
 		benchmarks.AllBenchmarks(report)
 
-		report.Print()
+		report.Print(noColor)
 
 		fmt.Println()
 
-		submitOrViewOrNo := ask("Would you like to anonymously contribute this data to https://z.cloudsnorkel.com/? Your IP address may be logged, but instance id and other PII will not be sent.", map[rune]string{'y': "yes", 'n': "no", 'v': "view JSON"}, 'n')
+		var submitOrViewOrNo rune
+
+		if b, _ := cmd.Flags().GetBool("report"); b {
+			submitOrViewOrNo = 'y'
+		} else if b, _ := cmd.Flags().GetBool("no-report"); b {
+			submitOrViewOrNo = 'n'
+		} else {
+			submitOrViewOrNo = ask("Would you like to anonymously contribute this data to https://z.cloudsnorkel.com/? Your IP address may be logged, but instance id and other PII will not be sent.", map[rune]string{'y': "yes", 'n': "no", 'v': "view JSON"}, 'n')
+		}
+
 		if submitOrViewOrNo == 'v' {
-			report.PrintJson()
+			report.PrintJson(noColor)
 			submitOrViewOrNo = ask("Ok to submit?", map[rune]string{'y': "yes", 'n': "no"}, 'n')
 		}
 		if submitOrViewOrNo == 'y' {
@@ -62,6 +73,9 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
+	rootCmd.Flags().BoolP("report", "r", false, "Contribute anonymous report")
+	rootCmd.Flags().BoolP("no-report", "n", false, "Do not contribute anonymous report")
+	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Do not use colors to print results")
 	if err := rootCmd.Execute(); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
