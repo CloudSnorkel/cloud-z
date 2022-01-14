@@ -1,0 +1,31 @@
+name: Collect AWS reports
+
+on:
+  schedule:
+    - cron:  '12 9 * * *'
+
+jobs:
+  report:
+    name: Collect AWS reports
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.AWS_REPORT_ROLE }}
+          aws-region: us-east-1
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.17
+
+      - name: Run spot instances
+        run: |
+          go run scripts/collect-aws.go --instance-types t4g.nano,t3a.nano,t3.nano
