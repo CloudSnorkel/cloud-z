@@ -10,10 +10,11 @@ import (
 )
 
 var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
-	builtBy = "unknown"
+	version       = "dev"
+	commit        = "none"
+	date          = "unknown"
+	builtBy       = "unknown"
+	versionString = fmt.Sprintf("%s, commit %s, built at %s by %s", version, commit, date, builtBy)
 )
 
 var noColor bool = false
@@ -21,9 +22,11 @@ var noColor bool = false
 var rootCmd = &cobra.Command{
 	Use:     "cloud-z",
 	Short:   "Cloud-Z gathers information on cloud instances",
-	Version: fmt.Sprintf("%s, commit %s, built at %s by %s", version, commit, date, builtBy),
+	Version: versionString,
 	Run: func(cmd *cobra.Command, args []string) {
-		report := &reporting.Report{}
+		report := &reporting.Report{
+			CloudZVersion: versionString,
+		}
 
 		allCloudProviders := []providers.CloudProvider{
 			&providers.AwsProvider{},

@@ -1,6 +1,7 @@
 package reporting
 
 type Report struct {
+	CloudZVersion    string                     `json:"cloud-z-version"`
 	Cloud            string                     `json:"cloud"`
 	InstanceId       string                     `json:"-"`
 	InstanceType     string                     `json:"instanceType"`
