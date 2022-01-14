@@ -22,7 +22,7 @@ func (report *Report) Send() {
 		panic(err)
 	}
 
-	req, err := http.NewRequest("POST", "https://z.cloudsnorkel.com/submit/", bytes.NewReader(reportJson))
+	req, err := http.NewRequest("POST", "https://weather.cloudsnorkel.com/submit/", bytes.NewReader(reportJson))
 	if err != nil {
 		panic(err)
 	}

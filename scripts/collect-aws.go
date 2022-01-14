@@ -79,10 +79,10 @@ func run(requestedInstanceTypes map[string]bool) {
 
 				if it.platform == types.ArchitectureTypeArm64 {
 					ami = arm64ami
-					downloadUrl = "https://z.cloudsnorkel.com/cloud-z/download/linux/arm64"
+					downloadUrl = "https://weather.cloudsnorkel.com/cloud-z/download/linux/arm64"
 				} else if it.platform == types.ArchitectureTypeX8664 {
 					ami = x64ami
-					downloadUrl = "https://z.cloudsnorkel.com/cloud-z/download/linux/x64"
+					downloadUrl = "https://weather.cloudsnorkel.com/cloud-z/download/linux/x64"
 				} else {
 					log.Fatal(fmt.Sprintf("Unknown platform %v", it.platform))
 				}

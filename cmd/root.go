@@ -59,7 +59,7 @@ var rootCmd = &cobra.Command{
 		} else if b, _ := cmd.Flags().GetBool("no-report"); b {
 			submitOrViewOrNo = 'n'
 		} else {
-			submitOrViewOrNo = ask("Would you like to anonymously contribute this data to https://z.cloudsnorkel.com/? Your IP address may be logged, but instance id and other PII will not be sent.", map[rune]string{'y': "yes", 'n': "no", 'v': "view JSON"}, 'n')
+			submitOrViewOrNo = ask("Would you like to anonymously contribute this data to https://weather.cloudsnorkel.com/? Your IP address may be logged, but instance id and other PII will not be sent.", map[rune]string{'y': "yes", 'n': "no", 'v': "view JSON"}, 'n')
 		}
 
 		if submitOrViewOrNo == 'v' {
