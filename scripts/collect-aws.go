@@ -220,7 +220,6 @@ func requestSpotInstance(ctx context.Context, workItem wordOrder) error {
 	var instances int32 = 1
 
 	_, err := workItem.client.RequestSpotInstances(ctx, &ec2.RequestSpotInstancesInput{
-		DryRun:        aws.Bool(true),
 		InstanceCount: &instances,
 		ValidUntil:    aws.Time(time.Now().UTC().Add(30 * time.Minute)),
 		LaunchSpecification: &types.RequestSpotLaunchSpecification{
