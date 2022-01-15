@@ -26,6 +26,10 @@ jobs:
         with:
           go-version: 1.17
 
+      - name: Install dependencies
+        run: |
+          go get
+
       - name: Run spot instances
         run: |
           go run scripts/collect-aws.go --instance-types t4g.nano,t3a.nano,t3.nano
