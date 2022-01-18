@@ -193,7 +193,9 @@ func readMemoryDevice(record *smbios.Structure) MemoryDevice {
 	binary.Read(recordBytes, binary.LittleEndian, &memDevice.MaximumVoltage)
 	binary.Read(recordBytes, binary.LittleEndian, &memDevice.ConfiguredVoltage)
 
-	memDevice.Location = record.Strings[0]
+	if len(record.Strings) >= 1 {
+		memDevice.Location = record.Strings[0]
+	}
 
 	return memDevice
 }
