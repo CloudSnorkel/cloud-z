@@ -32,4 +32,4 @@ jobs:
 
       - name: Run spot instances
         run: |
-          go run scripts/collect-aws.go --instance-types t4g.nano,t3a.nano,t3.nano
+          go run scripts/collect-aws.go --include t* --spot-cap 0.35

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -10,12 +12,25 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/aws/smithy-go"
 	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/spf13/cobra"
+	"io"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"time"
+)
+
+var (
+	argDryRun                  = false
+	argIncludeTypes            []string
+	argExcludeTypes            []string
+	argSpotCap                 float64
+	argUseLocalInstancePricing = false
 )
 
 type instanceDescriptor struct {
@@ -24,15 +39,95 @@ type instanceDescriptor struct {
 	platform types.ArchitectureType
 }
 
+const noPriceCap float64 = -1
+
 type wordOrder struct {
 	instanceType     types.InstanceType
 	availabilityZone string
 	ami              *string
+	priceCap         float64 // or noPriceCap
 	downloadUrl      string
 	client           *ec2.Client
 }
 
-func run(requestedInstanceTypes map[string]bool) {
+type instancePricingData struct {
+	InstanceType string `json:"instance_type"`
+	Pricing      map[string]struct {
+		Linux struct {
+			OnDemand interface{} `json:"ondemand"`
+		} `json:"linux"`
+	} `json:"pricing"`
+}
+
+type pricing map[string]map[string]float64
+
+func getPricing() map[string]map[string]float64 {
+	// TODO get from AWS API
+	var rawPricing []instancePricingData
+
+	if argUseLocalInstancePricing {
+		pf, err := os.Open("instances.json")
+		if err != nil {
+			log.Fatal("Unable to open instances.json")
+		}
+
+		defer pf.Close()
+		pd, err := io.ReadAll(pf)
+		if err != nil {
+			log.Fatal("Unable to read instances.json")
+		}
+
+		err = json.Unmarshal(pd, &rawPricing)
+		if err != nil {
+			log.Fatal(fmt.Sprintf("Unable to parse instances.json: %v", err))
+		}
+	} else {
+		hf, err := http.Get("https://github.com/vantage-sh/ec2instances.info/raw/master/www/instances.json")
+		if err != nil {
+			log.Fatal("Unable to download instances.json")
+		}
+
+		defer hf.Body.Close()
+		hd, err := io.ReadAll(hf.Body)
+		if err != nil {
+			log.Fatal("Unable to read remote instances.json")
+		}
+
+		err = json.Unmarshal(hd, &rawPricing)
+		if err != nil {
+			log.Fatal(fmt.Sprintf("Unable to parse remote instances.json: %v", err))
+		}
+	}
+
+	allPricing := make(pricing)
+	for _, instance := range rawPricing {
+		allPricing[instance.InstanceType] = make(map[string]float64)
+
+		for region, pricing := range instance.Pricing {
+			fmt.Println()
+			switch v := pricing.Linux.OnDemand.(type) {
+			case string:
+				price, err := strconv.ParseFloat(v, 64)
+				if err != nil {
+					log.Printf("Unable to parse price for %v @ %v [%v]", instance.InstanceType, region, v)
+				} else {
+					allPricing[instance.InstanceType][region] = price
+				}
+			case float64:
+				allPricing[instance.InstanceType][region] = v
+			default:
+				log.Printf("Unable to parse non-string price for %v @ %v [%v]", instance.InstanceType, region, v)
+			}
+		}
+	}
+
+	return allPricing
+}
+
+func run() {
+	allPricing := getPricing()
+	var totalPrice float64
+
 	ctx := context.Background()
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithAssumeRoleCredentialOptions(func(o *stscreds.AssumeRoleOptions) {
@@ -59,20 +154,21 @@ func run(requestedInstanceTypes map[string]bool) {
 
 	// gather a collection of instance type and az combos to launch
 	regionTracker := progress.Tracker{
-		Message: "Collecting work",
+		Message: "Planning work",
 		Total:   int64(len(regions)),
 	}
 	pw.AppendTracker(&regionTracker)
 
 	for _, region := range regions {
-		regionTracker.UpdateMessage(fmt.Sprintf("Collecting work %v", region))
+		regionTracker.UpdateMessage(fmt.Sprintf("Planning work for %v", region))
 
 		x64ami := findAmi(ctx, cfg, region, "x86_64", "gp2")
 		arm64ami := findAmi(ctx, cfg, region, "arm64", "gp2")
 		client := regionClient(cfg, region)
 		azs := allAZs(ctx, client)
 
-		for _, it := range describeInstanceTypes(ctx, client, requestedInstanceTypes) {
+		// TODO combine with describe_instance_type_offerings so we don't start types where they are not available
+		for _, it := range describeInstanceTypes(ctx, client) {
 			for _, az := range azs {
 				var ami *string
 				var downloadUrl string
@@ -84,16 +180,33 @@ func run(requestedInstanceTypes map[string]bool) {
 					ami = x64ami
 					downloadUrl = "https://weather.cloudsnorkel.com/cloud-z/download/linux/x64"
 				} else {
-					log.Fatal(fmt.Sprintf("Unknown platform %v", it.platform))
+					log.Println(fmt.Sprintf("Unknown platform %v for %v", it.platform, it.type_))
+					continue
+				}
+
+				priceCap := noPriceCap
+				if argSpotCap != 1 {
+					reportedPrice := allPricing[string(it.type_)][region]
+
+					if reportedPrice == 0 {
+						log.Printf("Skipping %v @ %v as price is missing", it.type_, az)
+						continue
+					}
+
+					priceCap = reportedPrice * argSpotCap
 				}
 
 				work = append(work, wordOrder{
 					instanceType:     it.type_,
 					availabilityZone: az,
 					ami:              ami,
+					priceCap:         priceCap,
 					downloadUrl:      downloadUrl,
 					client:           client,
 				})
+
+				// assume instance will be up for at most the minimum of 1 minute
+				totalPrice += priceCap / 60
 			}
 		}
 
@@ -101,6 +214,7 @@ func run(requestedInstanceTypes map[string]bool) {
 	}
 
 	regionTracker.MarkAsDone()
+	regionTracker.UpdateMessage(fmt.Sprintf("Planned %v spot instances for up to $%.02f", len(work), totalPrice))
 
 	// randomize work to avoid throttling
 	rand.Seed(time.Now().UnixNano())
@@ -116,7 +230,13 @@ func run(requestedInstanceTypes map[string]bool) {
 	var spotErrors []error
 
 	for _, workItem := range work {
-		workTracker.UpdateMessage(fmt.Sprintf("Requesting spot instance %v @ %v", workItem.instanceType, workItem.availabilityZone))
+		prefix := ""
+		if argDryRun {
+			prefix = "[DRY RUN] "
+		}
+
+		workTracker.UpdateMessage(fmt.Sprintf("%vRequesting spot instance %v @ %v (%v failed)",
+			prefix, workItem.instanceType, workItem.availabilityZone, len(spotErrors)))
 
 		err := requestSpotInstance(ctx, workItem)
 
@@ -128,17 +248,18 @@ func run(requestedInstanceTypes map[string]bool) {
 		}
 	}
 
+	workTracker.UpdateMessage(fmt.Sprintf("Requested %v spot instances, %v failed", len(work), len(spotErrors)))
 	workTracker.MarkAsDone()
-
-	for _, err := range spotErrors {
-		log.Println(err)
-	}
 
 	for pw.IsRenderInProgress() {
 		if pw.LengthActive() == 0 {
 			pw.Stop()
 		}
 		time.Sleep(time.Millisecond * 100)
+	}
+
+	for _, err := range spotErrors {
+		log.Println(err)
 	}
 }
 
@@ -162,7 +283,25 @@ func allRegions(ctx context.Context, ec2Client *ec2.Client) []string {
 	return result
 }
 
-func describeInstanceTypes(ctx context.Context, ec2Client *ec2.Client, requestedInstanceTypes map[string]bool) []instanceDescriptor {
+func shouldUseInstanceType(instanceType types.InstanceType) bool {
+	for _, excludePattern := range argExcludeTypes {
+		matched, _ := filepath.Match(excludePattern, string(instanceType))
+		if matched {
+			return false
+		}
+	}
+
+	for _, includePattern := range argIncludeTypes {
+		matched, _ := filepath.Match(includePattern, string(instanceType))
+		if matched {
+			return true
+		}
+	}
+
+	return false
+}
+
+func describeInstanceTypes(ctx context.Context, ec2Client *ec2.Client) []instanceDescriptor {
 	var result []instanceDescriptor
 
 	paginator := ec2.NewDescribeInstanceTypesPaginator(ec2Client, &ec2.DescribeInstanceTypesInput{})
@@ -172,14 +311,19 @@ func describeInstanceTypes(ctx context.Context, ec2Client *ec2.Client, requested
 			log.Fatal(err)
 		}
 		for _, instanceType := range output.InstanceTypes {
-			if !requestedInstanceTypes[string(instanceType.InstanceType)] {
+			if !shouldUseInstanceType(instanceType.InstanceType) {
 				continue
+			}
+
+			arch := instanceType.ProcessorInfo.SupportedArchitectures[0]
+			if arch == "i386" && len(instanceType.ProcessorInfo.SupportedArchitectures) > 1 {
+				arch = instanceType.ProcessorInfo.SupportedArchitectures[1]
 			}
 
 			result = append(result, instanceDescriptor{
 				name:     string(instanceType.InstanceType),
 				type_:    instanceType.InstanceType,
-				platform: instanceType.ProcessorInfo.SupportedArchitectures[0],
+				platform: arch,
 			})
 		}
 	}
@@ -219,7 +363,8 @@ func findAmi(ctx context.Context, cfg aws.Config, region string, platform string
 func requestSpotInstance(ctx context.Context, workItem wordOrder) error {
 	var instances int32 = 1
 
-	_, err := workItem.client.RequestSpotInstances(ctx, &ec2.RequestSpotInstancesInput{
+	requestParams := &ec2.RequestSpotInstancesInput{
+		DryRun:        aws.Bool(argDryRun),
 		InstanceCount: &instances,
 		ValidUntil:    aws.Time(time.Now().UTC().Add(30 * time.Minute)),
 		LaunchSpecification: &types.RequestSpotLaunchSpecification{
@@ -230,7 +375,18 @@ func requestSpotInstance(ctx context.Context, workItem wordOrder) error {
 			},
 			UserData: aws.String(userData(workItem.downloadUrl)),
 		},
-	})
+	}
+
+	if workItem.priceCap != noPriceCap {
+		requestParams.SpotPrice = aws.String(fmt.Sprintf("%.05f", workItem.priceCap))
+	}
+
+	_, err := workItem.client.RequestSpotInstances(ctx, requestParams)
+
+	var apiErr smithy.APIError
+	if argDryRun && errors.As(err, &apiErr) && apiErr.ErrorCode() == "DryRunOperation" {
+		return nil
+	}
 
 	return err
 }
@@ -248,21 +404,14 @@ func main() {
 		Use:   "collect-aws",
 		Short: "Runs Cloud-Z on multiple regions, azs, and instance types on AWS",
 		Run: func(cmd *cobra.Command, args []string) {
-			instanceTypes, err := cmd.Flags().GetStringSlice("instance-types")
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			instanceTypesMap := make(map[string]bool)
-			for _, it := range instanceTypes {
-				instanceTypesMap[it] = true
-			}
-
-			run(instanceTypesMap)
+			run()
 		},
 	}
-	rootCmd.Flags().StringSliceP("instance-types", "i", []string{}, "List of instance types to use")
-	_ = rootCmd.MarkFlagRequired("instance-types")
+	rootCmd.Flags().BoolVarP(&argDryRun, "dry-run", "d", false, "Do not run any instances")
+	rootCmd.Flags().StringSliceVarP(&argIncludeTypes, "include", "i", []string{"*"}, "List of instance types to include")
+	rootCmd.Flags().StringSliceVarP(&argExcludeTypes, "exclude", "e", []string{}, "List of instance types to exclude")
+	rootCmd.Flags().Float64VarP(&argSpotCap, "spot-cap", "s", 1, "Max cap of spot price as percentage of on-demand price (0 to 1)")
+	rootCmd.Flags().BoolVarP(&argUseLocalInstancePricing, "local-pricing", "l", false, "Use local copy of instances.json")
 	if err := rootCmd.Execute(); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
