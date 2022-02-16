@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -41,7 +42,7 @@ type instanceDescriptor struct {
 
 const noPriceCap float64 = -1
 
-type wordOrder struct {
+type workOrder struct {
 	instanceType     types.InstanceType
 	availabilityZone string
 	ami              *string
@@ -104,7 +105,6 @@ func getPricing() map[string]map[string]float64 {
 		allPricing[instance.InstanceType] = make(map[string]float64)
 
 		for region, pricing := range instance.Pricing {
-			fmt.Println()
 			switch v := pricing.Linux.OnDemand.(type) {
 			case string:
 				price, err := strconv.ParseFloat(v, 64)
@@ -125,8 +125,11 @@ func getPricing() map[string]map[string]float64 {
 }
 
 func run() {
-	allPricing := getPricing()
+	var allPricing pricing
 	var totalPrice float64
+	if argSpotCap != 1 {
+		allPricing = getPricing()
+	}
 
 	ctx := context.Background()
 	cfg, err := config.LoadDefaultConfig(ctx,
@@ -141,7 +144,7 @@ func run() {
 	baseClient := regionClient(cfg, "us-east-1")
 	regions := allRegions(ctx, baseClient)
 
-	var work []wordOrder
+	var work []workOrder
 
 	pw := progress.NewWriter()
 	pw.ShowETA(true)
@@ -159,62 +162,39 @@ func run() {
 	}
 	pw.AppendTracker(&regionTracker)
 
+	var regionWaitGroup sync.WaitGroup
+	var workChannel = make(chan workOrder, 10)
 	for _, region := range regions {
-		regionTracker.UpdateMessage(fmt.Sprintf("Planning work for %v", region))
+		regionWaitGroup.Add(1)
+		go func(region string) {
+			defer regionWaitGroup.Done()
+			defer regionTracker.Increment(1)
 
-		x64ami := findAmi(ctx, cfg, region, "x86_64", "gp2")
-		arm64ami := findAmi(ctx, cfg, region, "arm64", "gp2")
-		client := regionClient(cfg, region)
-		azs := allAZs(ctx, client)
+			collectWork(ctx, cfg, region, allPricing, workChannel)
+		}(region)
+	}
 
-		// TODO combine with describe_instance_type_offerings so we don't start types where they are not available
-		for _, it := range describeInstanceTypes(ctx, client) {
-			for _, az := range azs {
-				var ami *string
-				var downloadUrl string
+	go func() {
+		regionWaitGroup.Wait()
+		close(workChannel)
+	}()
 
-				if it.platform == types.ArchitectureTypeArm64 {
-					ami = arm64ami
-					downloadUrl = "https://weather.cloudsnorkel.com/cloud-z/download/linux/arm64"
-				} else if it.platform == types.ArchitectureTypeX8664 {
-					ami = x64ami
-					downloadUrl = "https://weather.cloudsnorkel.com/cloud-z/download/linux/x64"
-				} else {
-					log.Println(fmt.Sprintf("Unknown platform %v for %v", it.platform, it.type_))
-					continue
-				}
+	for workItem := range workChannel {
+		work = append(work, workItem)
 
-				priceCap := noPriceCap
-				if argSpotCap != 1 {
-					reportedPrice := allPricing[string(it.type_)][region]
-
-					if reportedPrice == 0 {
-						log.Printf("Skipping %v @ %v as price is missing", it.type_, az)
-						continue
-					}
-
-					priceCap = reportedPrice * argSpotCap
-				}
-
-				work = append(work, wordOrder{
-					instanceType:     it.type_,
-					availabilityZone: az,
-					ami:              ami,
-					priceCap:         priceCap,
-					downloadUrl:      downloadUrl,
-					client:           client,
-				})
-
-				// assume instance will be up for at most the minimum of 1 minute
-				totalPrice += priceCap / 60
-			}
+		if argSpotCap != 1 {
+			// assume instance will be up for at most the minimum of 1 minute
+			totalPrice += workItem.priceCap / 60
 		}
-
-		regionTracker.Increment(1)
 	}
 
 	regionTracker.MarkAsDone()
-	regionTracker.UpdateMessage(fmt.Sprintf("Planned %v spot instances for up to $%.02f", len(work), totalPrice))
+
+	totalPriceDesc := ""
+	if argSpotCap != 1 {
+		totalPriceDesc = fmt.Sprintf(" for up to $%.02f", totalPrice)
+	}
+	regionTracker.UpdateMessage(fmt.Sprintf("Planned %v spot instances%s", len(work), totalPriceDesc))
 
 	// randomize work to avoid throttling
 	rand.Seed(time.Now().UnixNano())
@@ -360,7 +340,54 @@ func findAmi(ctx context.Context, cfg aws.Config, region string, platform string
 	return output.Parameter.Value
 }
 
-func requestSpotInstance(ctx context.Context, workItem wordOrder) error {
+func collectWork(ctx context.Context, cfg aws.Config, region string, allPricing pricing, workChannel chan<- workOrder) {
+	x64ami := findAmi(ctx, cfg, region, "x86_64", "gp2")
+	arm64ami := findAmi(ctx, cfg, region, "arm64", "gp2")
+	client := regionClient(cfg, region)
+	azs := allAZs(ctx, client)
+
+	// TODO combine with describe_instance_type_offerings so we don't start types where they are not available
+	for _, it := range describeInstanceTypes(ctx, client) {
+		for _, az := range azs {
+			var ami *string
+			var downloadUrl string
+
+			if it.platform == types.ArchitectureTypeArm64 {
+				ami = arm64ami
+				downloadUrl = "https://weather.cloudsnorkel.com/cloud-z/download/linux/arm64"
+			} else if it.platform == types.ArchitectureTypeX8664 {
+				ami = x64ami
+				downloadUrl = "https://weather.cloudsnorkel.com/cloud-z/download/linux/x64"
+			} else {
+				log.Println(fmt.Sprintf("Unknown platform %v for %v", it.platform, it.type_))
+				continue
+			}
+
+			priceCap := noPriceCap
+			if argSpotCap != 1 {
+				reportedPrice := allPricing[string(it.type_)][region]
+
+				if reportedPrice == 0 {
+					log.Printf("Skipping %v @ %v as price is missing", it.type_, az)
+					continue
+				}
+
+				priceCap = reportedPrice * argSpotCap
+			}
+
+			workChannel <- workOrder{
+				instanceType:     it.type_,
+				availabilityZone: az,
+				ami:              ami,
+				priceCap:         priceCap,
+				downloadUrl:      downloadUrl,
+				client:           client,
+			}
+		}
+	}
+}
+
+func requestSpotInstance(ctx context.Context, workItem workOrder) error {
 	var instances int32 = 1
 
 	requestParams := &ec2.RequestSpotInstancesInput{
