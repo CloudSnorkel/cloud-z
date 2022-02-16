@@ -207,7 +207,8 @@ func run() {
 	}
 	pw.AppendTracker(workTracker)
 
-	var spotErrors []error
+	spotErrors := make(map[string]uint)
+	totalSpotErrors := 0
 
 	for _, workItem := range work {
 		prefix := ""
@@ -216,19 +217,20 @@ func run() {
 		}
 
 		workTracker.UpdateMessage(fmt.Sprintf("%vRequesting spot instance %v @ %v (%v failed)",
-			prefix, workItem.instanceType, workItem.availabilityZone, len(spotErrors)))
+			prefix, workItem.instanceType, workItem.availabilityZone, totalSpotErrors))
 
 		err := requestSpotInstance(ctx, workItem)
 
-		if err != nil {
-			spotErrors = append(spotErrors, err)
+		if err != "" {
+			spotErrors[err] += 1
+			totalSpotErrors += 1
 			workTracker.IncrementWithError(1)
 		} else {
 			workTracker.Increment(1)
 		}
 	}
 
-	workTracker.UpdateMessage(fmt.Sprintf("Requested %v spot instances, %v failed", len(work), len(spotErrors)))
+	workTracker.UpdateMessage(fmt.Sprintf("Requested %v spot instances, %v failed", len(work), totalSpotErrors))
 	workTracker.MarkAsDone()
 
 	for pw.IsRenderInProgress() {
@@ -238,8 +240,8 @@ func run() {
 		time.Sleep(time.Millisecond * 100)
 	}
 
-	for _, err := range spotErrors {
-		log.Println(err)
+	for err, count := range spotErrors {
+		fmt.Printf("[%5d] %v\n", count, err)
 	}
 }
 
@@ -387,7 +389,7 @@ func collectWork(ctx context.Context, cfg aws.Config, region string, allPricing 
 	}
 }
 
-func requestSpotInstance(ctx context.Context, workItem workOrder) error {
+func requestSpotInstance(ctx context.Context, workItem workOrder) string {
 	var instances int32 = 1
 
 	requestParams := &ec2.RequestSpotInstancesInput{
@@ -410,12 +412,19 @@ func requestSpotInstance(ctx context.Context, workItem workOrder) error {
 
 	_, err := workItem.client.RequestSpotInstances(ctx, requestParams)
 
-	var apiErr smithy.APIError
-	if argDryRun && errors.As(err, &apiErr) && apiErr.ErrorCode() == "DryRunOperation" {
-		return nil
+	if err == nil {
+		return ""
 	}
 
-	return err
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		if argDryRun && apiErr.ErrorCode() == "DryRunOperation" {
+			return ""
+		}
+		return apiErr.ErrorMessage()
+	}
+
+	return "Not an API error"
 }
 
 func userData(downloadUrl string) string {
