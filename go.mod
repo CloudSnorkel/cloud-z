@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.13.1
 	github.com/aws/aws-sdk-go-v2/credentials v1.8.0
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.27.0
+	github.com/aws/aws-sdk-go-v2/service/servicequotas v1.11.0
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.19.0
 	github.com/cloudfoundry/gosigar v1.3.3
 	github.com/digitalocean/go-smbios v0.0.0-20180907143718-390a4f403a8e
@@ -16,6 +17,7 @@ require (
 	github.com/jedib0t/go-pretty/v6 v6.2.5
 	github.com/klauspost/cpuid/v2 v2.0.9
 	github.com/spf13/cobra v1.3.0
+	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
 )
 
 require (

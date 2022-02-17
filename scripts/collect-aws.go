@@ -11,17 +11,20 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/smithy-go"
 	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/semaphore"
 	"io"
 	"log"
-	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -38,13 +41,16 @@ type instanceDescriptor struct {
 	name     string
 	type_    types.InstanceType
 	platform types.ArchitectureType
+	vcpus    int64
 }
 
 const noPriceCap float64 = -1
 
 type workOrder struct {
 	instanceType     types.InstanceType
+	vcpus            int64
 	availabilityZone string
+	region           string
 	ami              *string
 	priceCap         float64 // or noPriceCap
 	downloadUrl      string
@@ -170,6 +176,7 @@ func run() {
 			defer regionWaitGroup.Done()
 			defer regionTracker.Increment(1)
 
+			initializeSpotQuotasForRegion(ctx, cfg, region)
 			collectWork(ctx, cfg, region, allPricing, workChannel)
 		}(region)
 	}
@@ -189,6 +196,9 @@ func run() {
 	}
 
 	regionTracker.MarkAsDone()
+	if regionTracker.IsErrored() {
+		return
+	}
 
 	totalPriceDesc := ""
 	if argSpotCap != 1 {
@@ -196,13 +206,14 @@ func run() {
 	}
 	regionTracker.UpdateMessage(fmt.Sprintf("Planned %v spot instances%s", len(work), totalPriceDesc))
 
-	// randomize work to avoid throttling
-	rand.Seed(time.Now().UnixNano())
-	rand.Shuffle(len(work), func(i, j int) { work[i], work[j] = work[j], work[i] })
-
 	// request spot instances
+	prefix := ""
+	if argDryRun {
+		prefix = "[DRY RUN] "
+	}
+
 	workTracker := &progress.Tracker{
-		Message: "Requesting spot instances",
+		Message: fmt.Sprintf("%vRequesting spot instances", prefix),
 		Total:   int64(len(work)),
 	}
 	pw.AppendTracker(workTracker)
@@ -210,29 +221,48 @@ func run() {
 	spotErrors := make(map[string]uint)
 	totalSpotErrors := 0
 
+	var workWaitGroup sync.WaitGroup
+	var errorChannel = make(chan string, 10)
+
 	for _, workItem := range work {
-		prefix := ""
-		if argDryRun {
-			prefix = "[DRY RUN] "
-		}
+		workWaitGroup.Add(1)
 
-		workTracker.UpdateMessage(fmt.Sprintf("%vRequesting spot instance %v @ %v (%v failed)",
-			prefix, workItem.instanceType, workItem.availabilityZone, totalSpotErrors))
+		go func(workItem workOrder) {
+			defer workWaitGroup.Done()
+			defer workTracker.Increment(1)
 
-		err := requestSpotInstance(ctx, workItem)
+			quotaReleaser, err := grabQuota(ctx, workItem)
+			if err != "" {
+				errorChannel <- err
+				return
+			}
+			defer quotaReleaser()
 
-		if err != "" {
-			spotErrors[err] += 1
-			totalSpotErrors += 1
-			workTracker.IncrementWithError(1)
-		} else {
-			workTracker.Increment(1)
-		}
+			workTracker.UpdateMessage(fmt.Sprintf("%vRequesting spot instance %v @ %v (%v failed)",
+				prefix, workItem.instanceType, workItem.availabilityZone, totalSpotErrors))
+
+			err = requestSpotInstance(ctx, workItem)
+			if err != "" {
+				errorChannel <- err
+			}
+		}(workItem)
+	}
+
+	go func() {
+		workWaitGroup.Wait()
+		close(errorChannel)
+	}()
+
+	for err := range errorChannel {
+		spotErrors[err] += 1
+		totalSpotErrors += 1
+		workTracker.UpdateMessage(fmt.Sprintf("Requesting %v spot instances, %v failed", len(work), totalSpotErrors))
 	}
 
 	workTracker.UpdateMessage(fmt.Sprintf("Requested %v spot instances, %v failed", len(work), totalSpotErrors))
 	workTracker.MarkAsDone()
 
+	// finish progress bar
 	for pw.IsRenderInProgress() {
 		if pw.LengthActive() == 0 {
 			pw.Stop()
@@ -240,6 +270,7 @@ func run() {
 		time.Sleep(time.Millisecond * 100)
 	}
 
+	// print spot errors
 	for err, count := range spotErrors {
 		fmt.Printf("[%5d] %v\n", count, err)
 	}
@@ -306,6 +337,7 @@ func describeInstanceTypes(ctx context.Context, ec2Client *ec2.Client) []instanc
 				name:     string(instanceType.InstanceType),
 				type_:    instanceType.InstanceType,
 				platform: arch,
+				vcpus:    int64(*instanceType.VCpuInfo.DefaultVCpus),
 			})
 		}
 	}
@@ -379,7 +411,9 @@ func collectWork(ctx context.Context, cfg aws.Config, region string, allPricing 
 
 			workChannel <- workOrder{
 				instanceType:     it.type_,
+				vcpus:            it.vcpus,
 				availabilityZone: az,
+				region:           region,
 				ami:              ami,
 				priceCap:         priceCap,
 				downloadUrl:      downloadUrl,
@@ -389,13 +423,106 @@ func collectWork(ctx context.Context, cfg aws.Config, region string, allPricing 
 	}
 }
 
+type regionSpotQuotaDetails struct {
+	maxVcpus  int64
+	semaphore *semaphore.Weighted
+}
+
+var spotQuotas = []struct {
+	name    string
+	code    string
+	matcher string
+	region  sync.Map
+}{
+	{name: "All DL Spot Instance Requests", code: "L-85EED4F7", matcher: "dl[0-9].*"},
+	{name: "All F Spot Instance Requests", code: "L-88CF9481", matcher: "f[0-9].*"},
+	{name: "All G and VT Spot Instance Requests", code: "L-3819A6DF", matcher: "(g|vt)[0-9].*"},
+	{name: "All Inf Spot Instance Requests", code: "L-B5D1601B", matcher: "inf[0-9].*"},
+	{name: "All P Spot Instance Requests", code: "L-7212CCBC", matcher: "p[0-9].*"},
+	{name: "All Standard (A, C, D, H, I, M, R, T, Z) Spot Instance Requests", code: "L-34B43A08", matcher: "[acdhimrtz][0-9].*"},
+	{name: "All X Spot Instance Requests", code: "L-E3A00192", matcher: "x[0-9].*"},
+}
+
+func initializeSpotQuotasForRegion(ctx context.Context, cfg aws.Config, region string) {
+	client := servicequotas.NewFromConfig(cfg, func(o *servicequotas.Options) {
+		o.Region = region
+	})
+
+	for i := range spotQuotas {
+		quota := &spotQuotas[i]
+		quotaDetails, err := client.GetServiceQuota(ctx, &servicequotas.GetServiceQuotaInput{
+			QuotaCode:   aws.String(quota.code),
+			ServiceCode: aws.String("ec2"),
+		})
+
+		var maxVcpus int64 = 128 // reasonable default value
+		if err != nil {
+			log.Printf("Unable to get %v spot quota for %v, defaulting to %v: %v", quota.code, region, maxVcpus, err)
+		} else {
+			maxVcpus = int64(*quotaDetails.Quota.Value)
+		}
+
+		if maxVcpus > 0 {
+			quota.region.Store(region, regionSpotQuotaDetails{
+				maxVcpus,
+				semaphore.NewWeighted(maxVcpus),
+			})
+		} else {
+			quota.region.Store(region, regionSpotQuotaDetails{
+				0,
+				nil,
+			})
+		}
+	}
+}
+
+func getQuotaSemaphore(workItem workOrder) (int64, *semaphore.Weighted) {
+	for i := range spotQuotas {
+		quota := &spotQuotas[i]
+		match, _ := regexp.MatchString(quota.matcher, string(workItem.instanceType))
+		if match {
+			_regionQuota, ok := quota.region.Load(workItem.region)
+			if !ok {
+				log.Fatalf("No semaphore for %+v", workItem)
+			}
+			regionQuota, ok := _regionQuota.(regionSpotQuotaDetails)
+			if !ok {
+				log.Fatalf("Bad region quota type %+v", _regionQuota)
+			}
+			return regionQuota.maxVcpus, regionQuota.semaphore
+		}
+	}
+
+	// instance doesn't match any quota, YOLO!!!
+	// this happens with u-* and is4gen.* instances
+	return 1000, semaphore.NewWeighted(1000)
+}
+
+func grabQuota(ctx context.Context, workItem workOrder) (func(), string) {
+	max, quotaSemaphore := getQuotaSemaphore(workItem)
+	if quotaSemaphore == nil {
+		return nil, fmt.Sprintf("No quota for %v", workItem.instanceType)
+	}
+	if workItem.vcpus > max {
+		return nil, fmt.Sprintf("Quota too small for %v", workItem.instanceType)
+	}
+	if err := quotaSemaphore.Acquire(ctx, workItem.vcpus); err != nil {
+		return nil, err.Error()
+	}
+
+	return func() {
+		quotaSemaphore.Release(workItem.vcpus)
+	}, ""
+}
+
 func requestSpotInstance(ctx context.Context, workItem workOrder) string {
 	var instances int32 = 1
 
 	requestParams := &ec2.RequestSpotInstancesInput{
 		DryRun:        aws.Bool(argDryRun),
 		InstanceCount: &instances,
-		ValidUntil:    aws.Time(time.Now().UTC().Add(30 * time.Minute)),
+		// leave enough time for even metal instances to start and finish
+		ValidUntil: aws.Time(time.Now().UTC().Add(time.Hour)),
 		LaunchSpecification: &types.RequestSpotLaunchSpecification{
 			ImageId:      workItem.ami,
 			InstanceType: workItem.instanceType,
@@ -410,21 +537,89 @@ func requestSpotInstance(ctx context.Context, workItem workOrder) string {
 		requestParams.SpotPrice = aws.String(fmt.Sprintf("%.05f", workItem.priceCap))
 	}
 
-	_, err := workItem.client.RequestSpotInstances(ctx, requestParams)
+	spotResponse, err := workItem.client.RequestSpotInstances(ctx, requestParams)
 
-	if err == nil {
-		return ""
-	}
-
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
-		if argDryRun && apiErr.ErrorCode() == "DryRunOperation" {
-			return ""
+	if err != nil {
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) {
+			if apiErr.ErrorCode() == "MaxSpotInstanceCountExceeded" {
+				// retry? hopefully the semaphores protect us enough so this is not needed
+			}
+			if argDryRun && apiErr.ErrorCode() == "DryRunOperation" {
+				return ""
+			}
+			return apiErr.ErrorMessage()
 		}
-		return apiErr.ErrorMessage()
+
+		return err.Error()
 	}
 
-	return "Not an API error"
+	spotRequest := spotResponse.SpotInstanceRequests[0]
+	maxOpenTime := time.Now().Add(20 * time.Second)
+	var maxActiveTime time.Time
+	var maxActiveTerminated bool
+
+	for {
+		time.Sleep(30 * time.Second)
+
+		// TODO batch multiple describe requests together?
+		updatedStatus, err := workItem.client.DescribeSpotInstanceRequests(ctx, &ec2.DescribeSpotInstanceRequestsInput{
+			SpotInstanceRequestIds: []string{*spotRequest.SpotInstanceRequestId},
+		})
+
+		if err != nil {
+			return fmt.Sprintf("Error describing spot instance: %v", err)
+		}
+
+		spotRequest = updatedStatus.SpotInstanceRequests[0]
+
+		switch spotRequest.State {
+		case types.SpotInstanceStateOpen:
+			if time.Now().After(maxOpenTime) {
+				_, err := workItem.client.CancelSpotInstanceRequests(ctx, &ec2.CancelSpotInstanceRequestsInput{
+					SpotInstanceRequestIds: []string{*spotRequest.SpotInstanceRequestId},
+				})
+				if err != nil {
+					return fmt.Sprintf("Unable to cancel: %v", err)
+				}
+				return "Not fulfilled, probably due to spot cap is being too low"
+			}
+		case types.SpotInstanceStateActive:
+			if !maxActiveTerminated {
+				if maxActiveTime.IsZero() {
+					if strings.Contains(string(workItem.instanceType), "metal") {
+						// metal instances can take a long time to boot
+						maxActiveTime = time.Now().Add(20 * time.Minute)
+					} else {
+						// give normal instances no more than three minutes
+						maxActiveTime = time.Now().Add(3 * time.Minute)
+					}
+				} else {
+					if time.Now().After(maxActiveTime) {
+						_, err := workItem.client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+							InstanceIds: []string{*spotRequest.InstanceId},
+						})
+						if err != nil {
+							return fmt.Sprintf("Unable to cancel: %v", err)
+						}
+						maxActiveTerminated = true
+					}
+				}
+			}
+		case types.SpotInstanceStateClosed:
+			if *spotRequest.Status.Code != "instance-terminated-by-user" {
+				return fmt.Sprintf("closed: %v", *spotRequest.Status.Code)
+			}
+			return ""
+		case types.SpotInstanceStateCancelled:
+			if *spotRequest.Status.Code != "instance-terminated-by-user" {
+				return fmt.Sprintf("cancelled: %v", *spotRequest.Status.Code)
+			}
+			return ""
+		case types.SpotInstanceStateFailed:
+			return fmt.Sprintf("failed: %v", *spotRequest.Status.Code)
+		}
+	}
 }
 
 func userData(downloadUrl string) string {
