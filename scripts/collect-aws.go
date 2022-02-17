@@ -556,6 +556,7 @@ func requestSpotInstance(ctx context.Context, workItem workOrder) string {
 
 	spotRequest := spotResponse.SpotInstanceRequests[0]
 	maxOpenTime := time.Now().Add(20 * time.Second)
+	var maxOpenCancelled bool
 	var maxActiveTime time.Time
 	var maxActiveTerminated bool
 
@@ -575,14 +576,14 @@ func requestSpotInstance(ctx context.Context, workItem workOrder) string {
 
 		switch spotRequest.State {
 		case types.SpotInstanceStateOpen:
-			if time.Now().After(maxOpenTime) {
+			if !maxOpenCancelled && time.Now().After(maxOpenTime) {
 				_, err := workItem.client.CancelSpotInstanceRequests(ctx, &ec2.CancelSpotInstanceRequestsInput{
 					SpotInstanceRequestIds: []string{*spotRequest.SpotInstanceRequestId},
 				})
 				if err != nil {
 					return fmt.Sprintf("Unable to cancel: %v", err)
 				}
-				return "Not fulfilled, probably due to spot cap is being too low"
+				maxOpenCancelled = true
 			}
 		case types.SpotInstanceStateActive:
 			if !maxActiveTerminated {
