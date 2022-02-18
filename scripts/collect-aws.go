@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -219,7 +220,8 @@ func run() {
 	pw.AppendTracker(workTracker)
 
 	spotErrors := make(map[string]uint)
-	totalSpotErrors := 0
+	var totalSpotErrors int32 = 0
+	var totalRunning int32 = 0
 
 	var workWaitGroup sync.WaitGroup
 	var errorChannel = make(chan string, 10)
@@ -238,8 +240,10 @@ func run() {
 			}
 			defer quotaReleaser()
 
-			workTracker.UpdateMessage(fmt.Sprintf("%vRequesting spot instance %v @ %v (%v failed)",
-				prefix, workItem.instanceType, workItem.availabilityZone, totalSpotErrors))
+			atomic.AddInt32(&totalRunning, 1)
+			defer atomic.AddInt32(&totalRunning, -1)
+
+			workTracker.UpdateMessage(fmt.Sprintf("%vRequesting spot instance (%v running, %v failed)", prefix, totalRunning, totalSpotErrors))
 
 			err = requestSpotInstance(ctx, workItem)
 			if err != "" {
@@ -255,11 +259,11 @@ func run() {
 
 	for err := range errorChannel {
 		spotErrors[err] += 1
-		totalSpotErrors += 1
-		workTracker.UpdateMessage(fmt.Sprintf("Requesting %v spot instances, %v failed", len(work), totalSpotErrors))
+		atomic.AddInt32(&totalSpotErrors, 1)
+		workTracker.UpdateMessage(fmt.Sprintf("%vRequesting spot instance (%v running, %v failed)", prefix, totalRunning, totalSpotErrors))
 	}
 
-	workTracker.UpdateMessage(fmt.Sprintf("Requested %v spot instances, %v failed", len(work), totalSpotErrors))
+	workTracker.UpdateMessage(fmt.Sprintf("%vRequested %v spot instances, %v failed", prefix, len(work), totalSpotErrors))
 	workTracker.MarkAsDone()
 
 	// finish progress bar
@@ -270,6 +274,7 @@ func run() {
 		time.Sleep(time.Millisecond * 100)
 	}
 
+	// TODO print errors even if ctrl+c is hit
 	// print spot errors
 	for err, count := range spotErrors {
 		fmt.Printf("[%5d] %v\n", count, err)
