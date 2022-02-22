@@ -26,10 +26,10 @@ jobs:
         with:
           go-version: 1.17
 
-      - name: Install dependencies
+      - name: Build script
         run: |
-          go get
+          go build scripts/collect-aws.go
 
       - name: Run spot instances
         run: |
-          go run scripts/collect-aws.go --include t* --spot-cap 0.35
+          ./collect-aws --include t* --spot-cap 0.35
