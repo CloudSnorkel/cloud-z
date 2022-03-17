@@ -90,7 +90,7 @@ func getPricing() map[string]map[string]float64 {
 			log.Fatal(fmt.Sprintf("Unable to parse instances.json: %v", err))
 		}
 	} else {
-		hf, err := http.Get("https://github.com/vantage-sh/ec2instances.info/raw/master/www/instances.json")
+		hf, err := http.Get("https://instances.vantage.sh/instances.json")
 		if err != nil {
 			log.Fatal("Unable to download instances.json")
 		}
