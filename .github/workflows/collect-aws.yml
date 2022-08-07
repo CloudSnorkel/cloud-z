@@ -3,6 +3,18 @@ name: Collect AWS reports
 on:
   schedule:
     - cron:  '12 9 * * *'
+  workflow_dispatch:
+    inputs:
+      instanceTypes:
+        description: 'Instance types pattern'
+        required: true
+        default: 't*'
+        type: string
+      spotCap:
+        description: 'Spot pricing cap as percentage of full price (0 to 1)'
+        required: true
+        default: '0.35'
+        type: string
 
 jobs:
   report:
@@ -32,4 +44,4 @@ jobs:
 
       - name: Run spot instances
         run: |
-          ./collect-aws --include t* --spot-cap 0.35
+          ./collect-aws --include ${{ inputs.instanceTypes }} --spot-cap ${{ inputs.spotCap }}
