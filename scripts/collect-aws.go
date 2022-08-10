@@ -461,7 +461,7 @@ func initializeSpotQuotasForRegion(ctx context.Context, cfg aws.Config, region s
 		})
 
 		var maxVcpus int64 = 128 // reasonable default value
-		if err != nil {
+		if err != nil || quotaDetails.Quota.Value == nil {
 			log.Printf("Unable to get %v spot quota for %v, defaulting to %v: %v", quota.code, region, maxVcpus, err)
 		} else {
 			maxVcpus = int64(*quotaDetails.Quota.Value)
