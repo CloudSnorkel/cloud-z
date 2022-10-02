@@ -44,4 +44,4 @@ jobs:
 
       - name: Run spot instances
         run: |
-          ./collect-aws --include ${{ inputs.instanceTypes }} --spot-cap ${{ inputs.spotCap }}
+          ./collect-aws --include ${{ inputs.instanceTypes || 't*' }} --spot-cap ${{ inputs.spotCap || '0.35' }}
