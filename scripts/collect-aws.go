@@ -523,26 +523,41 @@ func grabQuota(ctx context.Context, workItem workOrder) (func(), string) {
 func requestSpotInstance(ctx context.Context, workItem workOrder) string {
 	var instances int32 = 1
 
-	requestParams := &ec2.RequestSpotInstancesInput{
-		DryRun:        aws.Bool(argDryRun),
-		InstanceCount: &instances,
-		// leave enough time for even metal instances to start and finish
-		ValidUntil: aws.Time(time.Now().UTC().Add(time.Hour)),
-		LaunchSpecification: &types.RequestSpotLaunchSpecification{
-			ImageId:      workItem.ami,
-			InstanceType: workItem.instanceType,
-			Placement: &types.SpotPlacement{
-				AvailabilityZone: aws.String(workItem.availabilityZone),
+	requestParams := &ec2.RunInstancesInput{
+		DryRun:                            aws.Bool(argDryRun),
+		MinCount:                          &instances,
+		MaxCount:                          &instances,
+		ImageId:                           workItem.ami,
+		InstanceType:                      workItem.instanceType,
+		InstanceInitiatedShutdownBehavior: types.ShutdownBehaviorTerminate,
+		InstanceMarketOptions: &types.InstanceMarketOptionsRequest{
+			MarketType: types.MarketTypeSpot,
+			SpotOptions: &types.SpotMarketOptions{
+				SpotInstanceType: types.SpotInstanceTypeOneTime,
 			},
-			UserData: aws.String(userData(workItem.downloadUrl)),
+		},
+		Placement: &types.Placement{
+			AvailabilityZone: aws.String(workItem.availabilityZone),
+		},
+		UserData: aws.String(userData(workItem.downloadUrl)),
+		TagSpecifications: []types.TagSpecification{
+			{
+				ResourceType: types.ResourceTypeInstance,
+				Tags: []types.Tag{
+					{
+						Key:   aws.String("Name"),
+						Value: aws.String("Cloud-Z collector"),
+					},
+				},
+			},
 		},
 	}
 
 	if workItem.priceCap != noPriceCap {
-		requestParams.SpotPrice = aws.String(fmt.Sprintf("%.05f", workItem.priceCap))
+		requestParams.InstanceMarketOptions.SpotOptions.MaxPrice = aws.String(fmt.Sprintf("%.05f", workItem.priceCap))
 	}
 
-	spotResponse, err := workItem.client.RequestSpotInstances(ctx, requestParams)
+	runResponse, err := workItem.client.RunInstances(ctx, requestParams)
 
 	if err != nil {
 		var apiErr smithy.APIError
@@ -559,9 +574,7 @@ func requestSpotInstance(ctx context.Context, workItem workOrder) string {
 		return err.Error()
 	}
 
-	spotRequest := spotResponse.SpotInstanceRequests[0]
-	maxOpenTime := time.Now().Add(20 * time.Second)
-	var maxOpenCancelled bool
+	instanceId := runResponse.Instances[0].InstanceId
 	var maxActiveTime time.Time
 	var maxActiveTerminated bool
 
@@ -569,28 +582,26 @@ func requestSpotInstance(ctx context.Context, workItem workOrder) string {
 		time.Sleep(30 * time.Second)
 
 		// TODO batch multiple describe requests together?
-		updatedStatus, err := workItem.client.DescribeSpotInstanceRequests(ctx, &ec2.DescribeSpotInstanceRequestsInput{
-			SpotInstanceRequestIds: []string{*spotRequest.SpotInstanceRequestId},
+		updatedStatus, err := workItem.client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: []string{*instanceId},
 		})
 
 		if err != nil {
 			return fmt.Sprintf("Error describing spot instance: %v", err)
 		}
 
-		spotRequest = updatedStatus.SpotInstanceRequests[0]
+		state := updatedStatus.Reservations[0].Instances[0].State.Name
 
-		switch spotRequest.State {
-		case types.SpotInstanceStateOpen:
-			if !maxOpenCancelled && time.Now().After(maxOpenTime) {
-				_, err := workItem.client.CancelSpotInstanceRequests(ctx, &ec2.CancelSpotInstanceRequestsInput{
-					SpotInstanceRequestIds: []string{*spotRequest.SpotInstanceRequestId},
-				})
-				if err != nil {
-					return fmt.Sprintf("Unable to cancel: %v", err)
-				}
-				maxOpenCancelled = true
-			}
-		case types.SpotInstanceStateActive:
+		switch state {
+		case types.InstanceStateNameRunning:
+			fallthrough
+		case types.InstanceStateNamePending:
+			fallthrough
+		case types.InstanceStateNameStopping:
+			fallthrough
+		case types.InstanceStateNameStopped:
+			fallthrough
+		case types.InstanceStateNameShuttingDown:
 			if !maxActiveTerminated {
 				if maxActiveTime.IsZero() {
 					if strings.Contains(string(workItem.instanceType), "metal") {
@@ -603,7 +614,7 @@ func requestSpotInstance(ctx context.Context, workItem workOrder) string {
 				} else {
 					if time.Now().After(maxActiveTime) {
 						_, err := workItem.client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
-							InstanceIds: []string{*spotRequest.InstanceId},
+							InstanceIds: []string{*instanceId},
 						})
 						if err != nil {
 							return fmt.Sprintf("Unable to cancel: %v", err)
@@ -612,18 +623,12 @@ func requestSpotInstance(ctx context.Context, workItem workOrder) string {
 					}
 				}
 			}
-		case types.SpotInstanceStateClosed:
-			if *spotRequest.Status.Code != "instance-terminated-by-user" {
-				return fmt.Sprintf("closed: %v", *spotRequest.Status.Code)
+		case types.InstanceStateNameTerminated:
+			stateReason := *updatedStatus.Reservations[0].Instances[0].StateReason.Code
+			if stateReason != "Client.InstanceInitiatedShutdown" {
+				return fmt.Sprintf("Terminated: %v", stateReason)
 			}
 			return ""
-		case types.SpotInstanceStateCancelled:
-			if *spotRequest.Status.Code != "instance-terminated-by-user" {
-				return fmt.Sprintf("cancelled: %v", *spotRequest.Status.Code)
-			}
-			return ""
-		case types.SpotInstanceStateFailed:
-			return fmt.Sprintf("failed: %v", *spotRequest.Status.Code)
 		}
 	}
 }
