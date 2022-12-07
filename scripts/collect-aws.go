@@ -154,12 +154,14 @@ func run() {
 	var work []workOrder
 
 	pw := progress.NewWriter()
-	pw.ShowETA(true)
 	pw.SetStyle(progress.StyleCircle)
 	pw.Style().Colors = progress.StyleColorsExample
 	pw.Style().Options.TimeDonePrecision = time.Second
 	pw.Style().Options.TimeInProgressPrecision = time.Second
 	pw.Style().Options.TimeOverallPrecision = time.Second
+	if os.Getenv("GITHUB_ACTIONS") != "true" {
+		pw.Style().Visibility.ETA = true
+	}
 	go pw.Render()
 
 	// gather a collection of instance type and az combos to launch
