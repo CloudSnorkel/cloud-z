@@ -122,6 +122,9 @@ func getPricing() map[string]map[string]float64 {
 				}
 			case float64:
 				allPricing[instance.InstanceType][region] = v
+			case nil:
+				// No on-demand Linux price means the type isn't sold in that region (like m1.large
+				// in GovCloud). Nothing to warn about: types without a price are skipped later anyway.
 			default:
 				log.Printf("Unable to parse non-string price for %v @ %v [%v]", instance.InstanceType, region, v)
 			}
