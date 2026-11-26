@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/ratelimit"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -36,7 +38,35 @@ var (
 	argExcludeTypes            []string
 	argSpotCap                 float64
 	argUseLocalInstancePricing = false
+	argMaxPerRegion            int64
 )
+
+// regionSlots limits how many spot instances run at once in each region. The vCPU quota
+// semaphores don't cover the account's spot instance count limit, so without this most
+// requests fail with MaxSpotInstanceCountExceeded.
+var regionSlots sync.Map // region -> *semaphore.Weighted
+
+func grabRegionSlot(ctx context.Context, region string) (func(), error) {
+	s, _ := regionSlots.LoadOrStore(region, semaphore.NewWeighted(argMaxPerRegion))
+	sem := s.(*semaphore.Weighted)
+	if err := sem.Acquire(ctx, 1); err != nil {
+		return nil, err
+	}
+	return func() { sem.Release(1) }, nil
+}
+
+// ec2Retryer retries throttling (RequestLimitExceeded is already in the SDK's defaults) and
+// MaxSpotInstanceCountExceeded, which clears up as other collector instances shut down. Both
+// can take minutes, so allow more and longer attempts than the default 3 attempts / 20s.
+// The SDK's retry token bucket is turned off: with hundreds of requests per region, it runs
+// dry and fails requests with "retry quota exceeded" instead of waiting.
+func ec2Retryer() aws.Retryer {
+	return retry.AddWithErrorCodes(retry.NewStandard(func(o *retry.StandardOptions) {
+		o.MaxAttempts = 6
+		o.MaxBackoff = 3 * time.Minute
+		o.RateLimiter = ratelimit.None
+	}), "MaxSpotInstanceCountExceeded")
+}
 
 type instanceDescriptor struct {
 	name     string
@@ -280,6 +310,13 @@ func run() {
 			defer workWaitGroup.Done()
 			defer workTracker.Increment(1)
 
+			slotReleaser, slotErr := grabRegionSlot(ctx, workItem.region)
+			if slotErr != nil {
+				errorChannel <- slotErr.Error()
+				return
+			}
+			defer slotReleaser()
+
 			quotaReleaser, err := grabQuota(ctx, workItem)
 			if err != "" {
 				errorChannel <- err
@@ -340,6 +377,7 @@ func isTerminal(f *os.File) bool {
 func regionClient(cfg aws.Config, region string) *ec2.Client {
 	return ec2.NewFromConfig(cfg, func(o *ec2.Options) {
 		o.Region = region
+		o.Retryer = ec2Retryer()
 	})
 }
 
@@ -635,9 +673,6 @@ func requestSpotInstance(ctx context.Context, workItem workOrder) string {
 	if err != nil {
 		var apiErr smithy.APIError
 		if errors.As(err, &apiErr) {
-			if apiErr.ErrorCode() == "MaxSpotInstanceCountExceeded" {
-				// retry? hopefully the semaphores protect us enough so this is not needed
-			}
 			if argDryRun && apiErr.ErrorCode() == "DryRunOperation" {
 				return ""
 			}
@@ -726,6 +761,7 @@ func main() {
 	rootCmd.Flags().StringSliceVarP(&argIncludeTypes, "include", "i", []string{"*"}, "List of instance types to include")
 	rootCmd.Flags().StringSliceVarP(&argExcludeTypes, "exclude", "e", []string{}, "List of instance types to exclude")
 	rootCmd.Flags().Float64VarP(&argSpotCap, "spot-cap", "s", 1, "Max cap of spot price as percentage of on-demand price (0 to 1)")
+	rootCmd.Flags().Int64VarP(&argMaxPerRegion, "max-per-region", "m", 20, "Max spot instances running at once in each region")
 	rootCmd.Flags().BoolVarP(&argUseLocalInstancePricing, "local-pricing", "l", false, "Use local copy of instances.json")
 	if err := rootCmd.Execute(); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
