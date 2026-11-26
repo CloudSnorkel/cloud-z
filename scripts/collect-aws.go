@@ -206,8 +206,15 @@ func run() {
 			defer regionWaitGroup.Done()
 			defer regionTracker.Increment(1)
 
-			initializeSpotQuotasForRegion(ctx, cfg, region)
-			collectWork(ctx, cfg, region, allPricing, workChannel)
+			// A region whose endpoints don't answer (like me-south-1 in Nov 2026) shouldn't
+			// stall or fail the whole run, so give each region a few minutes and skip it on error.
+			regionCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+			defer cancel()
+
+			initializeSpotQuotasForRegion(regionCtx, cfg, region)
+			if err := collectWork(regionCtx, cfg, region, allPricing, workChannel); err != nil {
+				log.Printf("Skipping region %v: %v", region, err)
+			}
 		}(region)
 	}
 
@@ -365,14 +372,14 @@ func shouldUseInstanceType(instanceType types.InstanceType) bool {
 	return false
 }
 
-func describeInstanceTypes(ctx context.Context, ec2Client *ec2.Client) []instanceDescriptor {
+func describeInstanceTypes(ctx context.Context, ec2Client *ec2.Client) ([]instanceDescriptor, error) {
 	var result []instanceDescriptor
 
 	paginator := ec2.NewDescribeInstanceTypesPaginator(ec2Client, &ec2.DescribeInstanceTypesInput{})
 	for paginator.HasMorePages() {
 		output, err := paginator.NextPage(ctx)
 		if err != nil {
-			log.Fatal(err)
+			return nil, err
 		}
 		for _, instanceType := range output.InstanceTypes {
 			if !shouldUseInstanceType(instanceType.InstanceType) {
@@ -393,13 +400,13 @@ func describeInstanceTypes(ctx context.Context, ec2Client *ec2.Client) []instanc
 		}
 	}
 
-	return result
+	return result, nil
 }
 
-func allAZs(ctx context.Context, ec2Client *ec2.Client) []string {
+func allAZs(ctx context.Context, ec2Client *ec2.Client) ([]string, error) {
 	output, err := ec2Client.DescribeAvailabilityZones(ctx, &ec2.DescribeAvailabilityZonesInput{})
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	var result []string
@@ -407,10 +414,10 @@ func allAZs(ctx context.Context, ec2Client *ec2.Client) []string {
 		result = append(result, *az.ZoneName)
 	}
 
-	return result
+	return result, nil
 }
 
-func findAmi(ctx context.Context, cfg aws.Config, region string, platform string, ebs string) *string {
+func findAmi(ctx context.Context, cfg aws.Config, region string, platform string, ebs string) (*string, error) {
 	client := ssm.NewFromConfig(cfg, func(o *ssm.Options) {
 		o.Region = region
 	})
@@ -419,20 +426,35 @@ func findAmi(ctx context.Context, cfg aws.Config, region string, platform string
 		Name: aws.String(fmt.Sprintf("/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-%v-%v", platform, ebs)),
 	})
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
-	return output.Parameter.Value
+	return output.Parameter.Value, nil
 }
 
-func collectWork(ctx context.Context, cfg aws.Config, region string, allPricing pricing, workChannel chan<- workOrder) {
-	x64ami := findAmi(ctx, cfg, region, "x86_64", "gp2")
-	arm64ami := findAmi(ctx, cfg, region, "arm64", "gp2")
+// collectWork sends a work order for every matching instance type and AZ in the region. It only
+// sends anything once every lookup succeeded, so a region that fails is skipped as a whole.
+func collectWork(ctx context.Context, cfg aws.Config, region string, allPricing pricing, workChannel chan<- workOrder) error {
+	x64ami, err := findAmi(ctx, cfg, region, "x86_64", "gp2")
+	if err != nil {
+		return err
+	}
+	arm64ami, err := findAmi(ctx, cfg, region, "arm64", "gp2")
+	if err != nil {
+		return err
+	}
 	client := regionClient(cfg, region)
-	azs := allAZs(ctx, client)
+	azs, err := allAZs(ctx, client)
+	if err != nil {
+		return err
+	}
+	instanceTypes, err := describeInstanceTypes(ctx, client)
+	if err != nil {
+		return err
+	}
 
 	// TODO combine with describe_instance_type_offerings so we don't start types where they are not available
-	for _, it := range describeInstanceTypes(ctx, client) {
+	for _, it := range instanceTypes {
 		for _, az := range azs {
 			var ami *string
 			var downloadUrl string
@@ -472,6 +494,8 @@ func collectWork(ctx context.Context, cfg aws.Config, region string, allPricing 
 			}
 		}
 	}
+
+	return nil
 }
 
 type regionSpotQuotaDetails struct {
