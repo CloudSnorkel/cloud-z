@@ -162,7 +162,31 @@ func run() {
 	if os.Getenv("GITHUB_ACTIONS") != "true" {
 		pw.Style().Visibility.ETA = true
 	}
-	go pw.Render()
+
+	// The progress bar redraws itself several times a second. That only works on a terminal.
+	// Anywhere else (like GitHub Actions) every redraw ends up as more lines in the log, so
+	// print a plain status line every now and then instead.
+	interactive := isTerminal(os.Stdout)
+	var status atomic.Value // func() string
+	stopStatus := make(chan struct{})
+	if interactive {
+		go pw.Render()
+	} else {
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if f, ok := status.Load().(func() string); ok {
+						log.Println(f())
+					}
+				case <-stopStatus:
+					return
+				}
+			}
+		}()
+	}
 
 	// gather a collection of instance type and az combos to launch
 	regionTracker := progress.Tracker{
@@ -170,6 +194,9 @@ func run() {
 		Total:   int64(len(regions)),
 	}
 	pw.AppendTracker(&regionTracker)
+	status.Store(func() string {
+		return fmt.Sprintf("Planning work: %v/%v regions", regionTracker.Value(), regionTracker.Total)
+	})
 
 	var regionWaitGroup sync.WaitGroup
 	var workChannel = make(chan workOrder, 10)
@@ -208,6 +235,9 @@ func run() {
 		totalPriceDesc = fmt.Sprintf(" for up to $%.02f", totalPrice)
 	}
 	regionTracker.UpdateMessage(fmt.Sprintf("Planned %v spot instances%s", len(work), totalPriceDesc))
+	if !interactive {
+		log.Printf("Planned %v spot instances%s", len(work), totalPriceDesc)
+	}
 
 	// request spot instances
 	prefix := ""
@@ -224,6 +254,11 @@ func run() {
 	spotErrors := make(map[string]uint)
 	var totalSpotErrors int32 = 0
 	var totalRunning int32 = 0
+
+	status.Store(func() string {
+		return fmt.Sprintf("%vRequesting spot instances: %v/%v done (%v running, %v failed)",
+			prefix, workTracker.Value(), workTracker.Total, atomic.LoadInt32(&totalRunning), atomic.LoadInt32(&totalSpotErrors))
+	})
 
 	var workWaitGroup sync.WaitGroup
 	var errorChannel = make(chan string, 10)
@@ -267,6 +302,10 @@ func run() {
 
 	workTracker.UpdateMessage(fmt.Sprintf("%vRequested %v spot instances, %v failed", prefix, len(work), totalSpotErrors))
 	workTracker.MarkAsDone()
+	close(stopStatus)
+	if !interactive {
+		log.Printf("%vRequested %v spot instances, %v failed", prefix, len(work), totalSpotErrors)
+	}
 
 	// finish progress bar
 	for pw.IsRenderInProgress() {
@@ -281,6 +320,11 @@ func run() {
 	for err, count := range spotErrors {
 		fmt.Printf("[%5d] %v\n", count, err)
 	}
+}
+
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 func regionClient(cfg aws.Config, region string) *ec2.Client {
