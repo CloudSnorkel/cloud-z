@@ -1,3 +1,5 @@
+version: 2
+
 project_name: cloud-z
 before:
   hooks:
@@ -13,14 +15,12 @@ builds:
       - arm64
     ldflags: -s -w -X cloud-z/cmd.version={{.Version}} -X cloud-z/cmd.commit={{.Commit}} -X cloud-z/cmd.date={{.Date}} -X cloud-z/cmd.builtBy=goreleaser -X cloud-z/reporting.apiKey={{ if index .Env "API_KEY"  }}{{ .Env.API_KEY }}{{ else }}no-env{{ end }}
 archives:
-  - replacements:
-      linux: Linux
-      windows: Windows
-      amd64: x86_64
+  - name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ title .Os }}_{{ if eq .Arch "amd64" }}x86_64{{ else }}{{ .Arch }}{{ end }}
 checksum:
   name_template: 'checksums.txt'
 snapshot:
-  name_template: "{{ incpatch .Version }}-next"
+  version_template: "{{ incpatch .Version }}-next"
 changelog:
   use: github
   sort: asc
