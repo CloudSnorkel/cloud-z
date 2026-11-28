@@ -25,6 +25,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -291,7 +293,7 @@ func run() {
 	}
 	pw.AppendTracker(workTracker)
 
-	spotErrors := make(map[string]uint)
+	spotErrors := newMessageGroups()
 	var totalSpotErrors int32 = 0
 	var totalRunning int32 = 0
 
@@ -312,14 +314,14 @@ func run() {
 
 			slotReleaser, slotErr := grabRegionSlot(ctx, workItem.region)
 			if slotErr != nil {
-				errorChannel <- slotErr.Error()
+				errorChannel <- workItem.describeError(slotErr.Error())
 				return
 			}
 			defer slotReleaser()
 
 			quotaReleaser, err := grabQuota(ctx, workItem)
 			if err != "" {
-				errorChannel <- err
+				errorChannel <- workItem.describeError(err)
 				return
 			}
 			defer quotaReleaser()
@@ -331,7 +333,7 @@ func run() {
 
 			err = requestSpotInstance(ctx, workItem)
 			if err != "" {
-				errorChannel <- err
+				errorChannel <- workItem.describeError(err)
 			}
 		}(workItem)
 	}
@@ -342,7 +344,7 @@ func run() {
 	}()
 
 	for err := range errorChannel {
-		spotErrors[err] += 1
+		spotErrors.Add(err)
 		atomic.AddInt32(&totalSpotErrors, 1)
 		workTracker.UpdateMessage(fmt.Sprintf("%vRequesting spot instance (%v running, %v failed)", prefix, totalRunning, totalSpotErrors))
 	}
@@ -363,9 +365,13 @@ func run() {
 	}
 
 	// TODO print errors even if ctrl+c is hit
-	// print spot errors
-	for err, count := range spotErrors {
-		fmt.Printf("[%5d] %v\n", count, err)
+	if planningWarnings.Len() > 0 {
+		fmt.Println("Skipped while planning:")
+		planningWarnings.Write(os.Stdout)
+	}
+	if spotErrors.Len() > 0 {
+		fmt.Println("Spot request errors:")
+		spotErrors.Write(os.Stdout)
 	}
 }
 
@@ -516,7 +522,7 @@ func collectWork(ctx context.Context, cfg aws.Config, region string, allPricing 
 				reportedPrice := allPricing[string(it.type_)][region]
 
 				if reportedPrice == 0 {
-					log.Printf("Skipping %v @ %v as price is missing", it.type_, az)
+					planningWarnings.Add(fmt.Sprintf("Skipping %v @ %v as price is missing", it.type_, az))
 					continue
 				}
 
@@ -629,6 +635,13 @@ func grabQuota(ctx context.Context, workItem workOrder) (func(), string) {
 	return func() {
 		quotaSemaphore.Release(workItem.vcpus)
 	}, ""
+}
+
+// describeError adds the instance type and AZ to an error, since many AWS errors (like "Max spot
+// instance count exceeded") don't say which request they belong to. The error summary groups
+// errors by everything else and lists the types and AZs that hit each one.
+func (w workOrder) describeError(err string) string {
+	return fmt.Sprintf("%v @ %v: %v", w.instanceType, w.availabilityZone, err)
 }
 
 func requestSpotInstance(ctx context.Context, workItem workOrder) string {
@@ -767,4 +780,221 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// messageGroups counts messages that only differ in small details, so thousands of errors like
+// "Your Spot request price of 0.01736 is lower than ... price of 0.0182." print as one line.
+//
+// Any word with a digit in it is treated as a detail: prices, instance types (c6i.xlarge),
+// availability zones (us-east-1a), account and request IDs, quota codes and so on. Messages with
+// the same text around their details share a group. Comma separated lists of details (like a list
+// of AZs) count as one detail, so lists of different lengths still group together.
+type messageGroups struct {
+	mu     sync.Mutex
+	groups map[string]*messageGroup
+}
+
+type messageGroup struct {
+	template string     // the message with detailMarker in place of each detail
+	count    uint       // number of messages in the group
+	details  [][]string // details[i][m] is the i-th detail of the m-th message
+}
+
+const detailMarker = "\x00"
+
+// planningWarnings collects types skipped while planning, so they print once at the end as a
+// short summary instead of a line for every AZ.
+var planningWarnings = newMessageGroups()
+
+var detailPattern = regexp.MustCompile(`[\w.:/-]*\d[\w.:/-]*`)
+
+func newMessageGroups() *messageGroups {
+	return &messageGroups{groups: make(map[string]*messageGroup)}
+}
+
+// splitDetails returns msg with every detail replaced by detailMarker, and the details in order.
+func splitDetails(msg string) (string, []string) {
+	var template strings.Builder
+	var details []string
+	last, detailStart := 0, 0
+	for _, loc := range detailPattern.FindAllStringIndex(msg, -1) {
+		start, end := loc[0], loc[1]
+		// punctuation at the end belongs to the sentence ("price of 0.0182."), not the detail
+		for strings.ContainsRune(".:/-", rune(msg[end-1])) {
+			end--
+		}
+		between := msg[last:start]
+		if len(details) > 0 && (between == ", " || between == ",") {
+			// the next item in a list of details
+			details[len(details)-1] = msg[detailStart:end]
+		} else {
+			template.WriteString(between)
+			template.WriteString(detailMarker)
+			details = append(details, msg[start:end])
+			detailStart = start
+		}
+		last = end
+	}
+	template.WriteString(msg[last:])
+	return template.String(), details
+}
+
+func (mg *messageGroups) Add(msg string) {
+	template, details := splitDetails(msg)
+
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+
+	g, ok := mg.groups[template]
+	if !ok {
+		g = &messageGroup{template: template, details: make([][]string, len(details))}
+		mg.groups[template] = g
+	}
+	g.count++
+	for i, d := range details {
+		g.details[i] = append(g.details[i], d)
+	}
+}
+
+func (mg *messageGroups) Len() int {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return len(mg.groups)
+}
+
+// Write prints one line per group, most common first. A detail that is the same in every message
+// of the group is printed as is, so a group of one prints exactly like the original message.
+// Details that vary are shown as <A>, <B>, ... with a summary of their values below: the range for
+// numbers, or the most common values for anything else.
+//
+//	[ 2212] Your Spot request price of <A> is lower than the minimum required Spot request fulfillment price of <B>.
+//	        <A>: 0.00123 to 4.512
+//	        <B>: 0.0015 to 5.01
+func (mg *messageGroups) Write(w io.Writer) {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+
+	groups := make([]*messageGroup, 0, len(mg.groups))
+	for _, g := range mg.groups {
+		groups = append(groups, g)
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].count != groups[j].count {
+			return groups[i].count > groups[j].count
+		}
+		return groups[i].template < groups[j].template
+	})
+
+	for _, g := range groups {
+		line, notes := g.describe()
+		fmt.Fprintf(w, "[%5d] %v\n", g.count, line)
+		for _, note := range notes {
+			fmt.Fprintf(w, "        %v\n", note)
+		}
+	}
+}
+
+func (g *messageGroup) describe() (string, []string) {
+	labels := make([]string, len(g.details))
+	var notes []string
+	nextLabel := 'A'
+
+	for i, values := range g.details {
+		if allSame(values) {
+			labels[i] = values[0]
+			continue
+		}
+		// the same detail often shows up twice ("sufficient c6i.xlarge capacity ... get c6i.xlarge capacity")
+		for j := 0; j < i; j++ {
+			if slices.Equal(values, g.details[j]) {
+				labels[i] = labels[j]
+				break
+			}
+		}
+		if labels[i] != "" {
+			continue
+		}
+		labels[i] = fmt.Sprintf("<%c>", nextLabel)
+		if nextLabel < 'Z' {
+			nextLabel++
+		}
+		notes = append(notes, fmt.Sprintf("%v: %v", labels[i], summarizeValues(values)))
+	}
+
+	parts := strings.Split(g.template, detailMarker)
+	var line strings.Builder
+	for i, part := range parts {
+		line.WriteString(part)
+		if i < len(labels) {
+			line.WriteString(labels[i])
+		}
+	}
+	return line.String(), notes
+}
+
+// summarizeValues describes the values of one detail: "min to max" when they are all numbers,
+// otherwise the most common values with their counts.
+func summarizeValues(values []string) string {
+	lo, hi, numeric := 0.0, 0.0, true
+	for i, v := range values {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			numeric = false
+			break
+		}
+		if i == 0 || f < lo {
+			lo = f
+		}
+		if i == 0 || f > hi {
+			hi = f
+		}
+	}
+	if numeric {
+		return fmt.Sprintf("%v to %v", lo, hi)
+	}
+
+	counts := make(map[string]int)
+	for _, v := range values {
+		counts[v]++
+	}
+	distinct := make([]string, 0, len(counts))
+	for v := range counts {
+		distinct = append(distinct, v)
+	}
+	sort.Slice(distinct, func(i, j int) bool {
+		if counts[distinct[i]] != counts[distinct[j]] {
+			return counts[distinct[i]] > counts[distinct[j]]
+		}
+		return distinct[i] < distinct[j]
+	})
+
+	const shown = 5
+	if len(distinct) > shown && counts[distinct[0]] == 1 {
+		// nothing repeats (request IDs and such), so a list of examples wouldn't tell much
+		return fmt.Sprintf("%v different values, like %v", len(distinct), distinct[0])
+	}
+	var examples []string
+	for i, v := range distinct {
+		if i == shown {
+			break
+		}
+		if counts[v] > 1 {
+			v = fmt.Sprintf("%v (%v)", v, counts[v])
+		}
+		examples = append(examples, v)
+	}
+	summary := strings.Join(examples, " | ")
+	if len(distinct) > shown {
+		summary += fmt.Sprintf(" | ...and %v more", len(distinct)-shown)
+	}
+	return summary
+}
+
+func allSame(values []string) bool {
+	for _, v := range values[1:] {
+		if v != values[0] {
+			return false
+		}
+	}
+	return true
 }
