@@ -464,13 +464,15 @@ func allAZs(ctx context.Context, ec2Client *ec2.Client) ([]string, error) {
 	return result, nil
 }
 
-func findAmi(ctx context.Context, cfg aws.Config, region string, platform string, ebs string) (*string, error) {
+// findAmi returns the latest Amazon Linux 2023 AMI for the given architecture (x86_64 or arm64)
+// from the public SSM parameters AWS maintains in every region.
+func findAmi(ctx context.Context, cfg aws.Config, region string, arch string) (*string, error) {
 	client := ssm.NewFromConfig(cfg, func(o *ssm.Options) {
 		o.Region = region
 	})
 
 	output, err := client.GetParameter(ctx, &ssm.GetParameterInput{
-		Name: aws.String(fmt.Sprintf("/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-%v-%v", platform, ebs)),
+		Name: aws.String(fmt.Sprintf("/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-%v", arch)),
 	})
 	if err != nil {
 		return nil, err
@@ -482,11 +484,11 @@ func findAmi(ctx context.Context, cfg aws.Config, region string, platform string
 // collectWork sends a work order for every matching instance type and AZ in the region. It only
 // sends anything once every lookup succeeded, so a region that fails is skipped as a whole.
 func collectWork(ctx context.Context, cfg aws.Config, region string, allPricing pricing, workChannel chan<- workOrder) error {
-	x64ami, err := findAmi(ctx, cfg, region, "x86_64", "gp2")
+	x64ami, err := findAmi(ctx, cfg, region, "x86_64")
 	if err != nil {
 		return err
 	}
-	arm64ami, err := findAmi(ctx, cfg, region, "arm64", "gp2")
+	arm64ami, err := findAmi(ctx, cfg, region, "arm64")
 	if err != nil {
 		return err
 	}
@@ -662,6 +664,12 @@ func requestSpotInstance(ctx context.Context, workItem workOrder) string {
 		},
 		Placement: &types.Placement{
 			AvailabilityZone: aws.String(workItem.availabilityZone),
+		},
+		// Require IMDSv2. Cloud-Z asks for a session token before reading instance metadata.
+		MetadataOptions: &types.InstanceMetadataOptionsRequest{
+			HttpEndpoint:            types.InstanceMetadataEndpointStateEnabled,
+			HttpTokens:              types.HttpTokensStateRequired,
+			HttpPutResponseHopLimit: aws.Int32(1),
 		},
 		UserData: aws.String(userData(workItem.downloadUrl)),
 		TagSpecifications: []types.TagSpecification{

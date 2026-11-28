@@ -12,6 +12,12 @@ type AwsProvider struct {
 	instanceIdentityDocument *instanceIdentityDocumentType
 }
 
+const (
+	tokenHeader    = "X-aws-ec2-metadata-token"
+	tokenTtlHeader = "X-aws-ec2-metadata-token-ttl-seconds"
+	tokenTtl       = "21600" // the maximum, so the token never expires mid-run
+)
+
 func (provider *AwsProvider) Detect() bool {
 	server, err := metadata.GetMetadataHeader("Server")
 
@@ -19,48 +25,58 @@ func (provider *AwsProvider) Detect() bool {
 		return false
 	}
 
-	return server == "EC2ws"
-}
-
-func (provider *AwsProvider) getMetadataJsonWithPossibleToken(url string, target interface{}) error {
-	if provider.token != nil {
-		return metadata.GetMetadataJson(url, target, "X-aws-ec2-metadata-token", *provider.token)
+	if server == "EC2ws" {
+		return true
 	}
 
-	err := metadata.GetMetadataJson(url, target, "", "")
-	if errors.Is(err, metadata.UnauthorizedError) {
-		tokenValue, err := metadata.PutMetadata("/latest/api/token", "X-aws-ec2-metadata-token-ttl-seconds", "120")
-		if err != nil {
-			return err
-		}
-		provider.token = &tokenValue
-	} else {
+	// With IMDSv2 required, an unauthenticated request may not look like EC2. Being able to get a
+	// session token is proof enough.
+	return provider.refreshToken() == nil
+}
+
+// refreshToken gets a new IMDSv2 session token.
+func (provider *AwsProvider) refreshToken() error {
+	tokenValue, err := metadata.PutMetadata("/latest/api/token", tokenTtlHeader, tokenTtl)
+	if err != nil {
 		return err
 	}
-
-	return metadata.GetMetadataJson(url, target, "X-aws-ec2-metadata-token", *provider.token)
+	provider.token = &tokenValue
+	return nil
 }
 
-func (provider *AwsProvider) getMetadataTextWithPossibleToken(url string) (string, error) {
-	// TODO refactor to share code with JSON function
-	if provider.token != nil {
-		return metadata.GetMetadataText(url, "X-aws-ec2-metadata-token", *provider.token)
-	}
-
-	result, err := metadata.GetMetadataText(url, "", "")
-	if errors.Is(err, metadata.UnauthorizedError) {
-		tokenValue, err := metadata.PutMetadata("/latest/api/token", "X-aws-ec2-metadata-token-ttl-seconds", "120")
-		if err != nil {
-			return "", err
+// withToken runs a metadata request using IMDSv2. It gets a session token first and renews it once
+// if the metadata server rejects it. If no token can be had at all, it falls back to IMDSv1.
+func (provider *AwsProvider) withToken(request func(headerName string, headerValue string) error) error {
+	if provider.token == nil {
+		if provider.refreshToken() != nil {
+			return request("", "")
 		}
-		provider.token = &tokenValue
-
-		return metadata.GetMetadataText(url, "X-aws-ec2-metadata-token", *provider.token)
-	} else if err != nil {
-		return "", err
-	} else {
-		return result, nil
 	}
+
+	err := request(tokenHeader, *provider.token)
+	if errors.Is(err, metadata.UnauthorizedError) {
+		if err := provider.refreshToken(); err != nil {
+			return err
+		}
+		err = request(tokenHeader, *provider.token)
+	}
+	return err
+}
+
+func (provider *AwsProvider) getMetadataJson(url string, target interface{}) error {
+	return provider.withToken(func(headerName string, headerValue string) error {
+		return metadata.GetMetadataJson(url, target, headerName, headerValue)
+	})
+}
+
+func (provider *AwsProvider) getMetadataText(url string) (string, error) {
+	var result string
+	err := provider.withToken(func(headerName string, headerValue string) error {
+		var err error
+		result, err = metadata.GetMetadataText(url, headerName, headerValue)
+		return err
+	})
+	return result, err
 }
 
 type instanceIdentityDocumentType struct {
@@ -86,7 +102,7 @@ func (provider *AwsProvider) getInstanceIdentity() error {
 	}
 
 	provider.instanceIdentityDocument = &instanceIdentityDocumentType{}
-	err := provider.getMetadataJsonWithPossibleToken("/2021-07-15/dynamic/instance-identity/document", provider.instanceIdentityDocument)
+	err := provider.getMetadataJson("/2021-07-15/dynamic/instance-identity/document", provider.instanceIdentityDocument)
 	if err != nil {
 		provider.instanceIdentityDocument = nil
 		return err
@@ -109,7 +125,7 @@ func (provider *AwsProvider) GetData(report *reporting.Report) {
 	report.InstanceType = provider.instanceIdentityDocument.InstanceType
 	report.Region = provider.instanceIdentityDocument.Region
 
-	report.AvailabilityZone, err = provider.getMetadataTextWithPossibleToken("/2021-07-15/meta-data/placement/availability-zone-id")
+	report.AvailabilityZone, err = provider.getMetadataText("/2021-07-15/meta-data/placement/availability-zone-id")
 	if err != nil {
 		report.AddError(fmt.Sprintf("Unable to get az: %v", err))
 	}
