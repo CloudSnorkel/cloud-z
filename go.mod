@@ -9,13 +9,13 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.350.0
 	github.com/aws/aws-sdk-go-v2/service/servicequotas v1.43.12
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.84.0
-	github.com/aws/smithy-go v1.28.9
+	github.com/aws/smithy-go v1.28.10
 	github.com/cloudfoundry/gosigar v1.3.133
 	github.com/digitalocean/go-smbios v0.0.0-20180907143718-390a4f403a8e
 	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
 	github.com/hokaccha/go-prettyjson v0.0.0-20211117102719-0474bc63780f
 	github.com/inhies/go-bytesize v0.0.0-20220417184213-4913239db9cf
-	github.com/jedib0t/go-pretty/v6 v6.9.2
+	github.com/jedib0t/go-pretty/v6 v6.9.3
 	github.com/klauspost/cpuid/v2 v2.4.2
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sync v0.25.0
